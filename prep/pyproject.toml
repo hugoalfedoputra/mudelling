@@ -1,0 +1,19 @@
+[project]
+name = "code"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "ipython>=9.10.0",
+    "librosa>=0.11.0",
+    "matplotlib>=3.10.8",
+    "paramiko>=4.0.0",
+    "python-docx>=1.2.0",
+    "scp>=0.15.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+]
