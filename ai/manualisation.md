@@ -1,47 +1,47 @@
 # Simplified network calculations
 
-The network to be used for an exemplary calculation is the CNN model, the CNN with GRU model, and the CNN with Self-Attention model. The flow of this algorithm consists of three main steps: preprocessing, spectrogram conversion, and modeling. Preprocessing has already been discussed in chapter 3.2.4. The input used for spectrogram conversion is different than the data used as the model input. In calculating STFT, one frame will be used with a length of 32 time-frames. There are techniques to avoid problems in calculating STFT naively, one example is spectral leakage, but the following calculation does not take those into account. After calculating STFT, the spectrogram output is then normalised using Z-score normalisation. This networks assumes no use of mini-batching and thus batch and layer normalisation. The exampled dataset for the modeling stage will consist of 5 rows of arbitrary data sampled from the subset which consists of 3 arbitrary labels: happy, sad, and tense. The example dataset is shown in Table X.X
+The simplified network to be used for an example calculation is the CNN model, the CNN with GRU model, and the CNN with Self-Attention model. The flow of this algorithm as shown in Gambar X.1 consists of three main steps: preprocessing, spectrogram calculation, and modeling. Preprocessing has already been discussed in chapter 3.2.4. After calculating STFT, the spectrogram output is then normalised using Z-score normalisation. Batching is will be used in implementation with a size of 32. This reflects past literature like Choi et al. (2016conv) and Pons et al. (2018) which uses the default batch size of 32 provided by TensorFlow. The simplified networks assumes no use of mini-batching and thus batch and layer normalisation. The exampled dataset for the modeling stage will consist of 5 rows of arbitrary data sampled from the subset which consists of 3 arbitrary labels: happy, sad, and tense. The example dataset is shown in Table X.X. Log-mel spectrogram amplitudes in each frequency bin were observed in preliminary data exploration to be around -80 and 10 (in dB). The example dataset will reflect this range.
+
+Gambar X.1 \<FLOWCHART 1\>
 
 Table X.X \<EXAMPLE DATASET\>
 
-// ADD A FLOWCHART TO DESCRIBE THE FLOW OF THE NETWORK ABOVE
+Gambar X.2 \<FLOWCHART PELATIHAN DETAIL\>
 
-// FLOWCHART ABOUT LOOPING 3 TIMES BECAUSE THERE ARE 3 BACK-END VARIATIONS
+In helping during training, the MTG-Jamendo dataset provides an official split for training, validation, and testing. The split is 60%, 20%, and 20% respectively. Gambar X.1 and Gambar X.2 illustrate when the each of the dataset split is used. Notably, the validation set is used after one epoch of training has finished. Albeit this was meant for model experimentation in the literature that used this dataset, the validation set is to be used to determine model checkpoints and limit epochs. The training concludes when the maximum number of epochs has been reached. The best performing checkpoints within those models are loaded and tested. The results are then compared and analysed as per the research question. Similar publications by Pons et al. (2018) and Choi et al. (2016conv) which is the basis for this experiment uses a learning rate of 0.001 and 0.005 respectively. Similar research using CNN from Choi et al. (2016automatic) show diminishing returns after 40 epochs using the ADAM optimizer. Both observe the performance of the model per epoch and end training based on an arbitrary decision. For attention models, Sukhavasi and Adapa (2019) limits to 60 epochs for ADAM with a learning rate of 0.001 before implementing learning rate adjustments using other methods. Won et al. (2019toward) agrees with maximum number of epochs and set the learning rate to 0.0001. The example calculation and the implementation of this experiment will use the default ADAM learning rate of 0.001. The implementation will limit the epochs to 60.
 
 # Front-end
 
-// FLESH THIS SECTION OUT TO BE A COMPARISON TABLE AND NOT JUST BULLET POINTS AND NUMBERED LIST
+<!-- // FLESH THIS SECTION OUT TO BE A COMPARISON TABLE AND NOT JUST BULLET POINTS AND NUMBERED LIST
 
 - Number of filters: 2
 - Input is split to 2 types: for the vertical and horizontal filters
 - For the vertical filter type: max-pool AFTER convolution
 - For the horizontal filter type: mean-pool BEFORE convolution
 - Filter 1 (namely $F_V$) size: 5x3 (vertical)
-- Filter 2 (namely $F_H$) size: 1x3 (horizontal)
+- Filter 2 (namely $F_H$) size: 1x3 (horizontal) -->
 
-Forward (vertical filter):
+Forward (vertical filter) setup is as follows:
 
-1. Input: 7x5 (HxW) where H is time and W is frequency. This mimics time series data modeling where tabular representation has time (as a column) where each row denotes the values at that time. The values of each features are the columns or the width, assuming HxW representation.
+1. Input: 7x5 (HxW) where H is time and W is frequency. The filter size is 5x3 (vertical).
 2. Number of channels: 1. This is because spectrogram consists of one scale of colors and not 3 like RGB image.
-3. Convolution with the vertical filter with "same" padding
-4. Apply ReLU
-5. Max-pool the result
+3. Convolution with the vertical filter with "same" padding.
+4. Uses ReLU after convolution.
+5. Max-pool the result.
 
-Forward (horizontal filter):
+Forward (horizontal filter) setup is as follows:
 
-1. Input: 7x5 (HxW) where H is frequency and W is time.
+1. Input: 7x5 (HxW) where H is frequency and W is time. The filter size is 1x3 (horizontal).
 2. Number of channels: 1. This is because spectrogram consists of one scale of colors and not 3 like RGB image.
-3. Mean-pool the spectrogram input such that the output dimension has a height of 1 and a width of time
-4. Convolution with horizonal filters with "same" padding
-5. Apply ReLU
+3. Mean-pool the spectrogram input such that the output dimension has a height of 1 and a width of time.
+4. Convolution with horizonal filters with "same" padding.
+5. Uses ReLU after convolution.
 
-Note that in the vertical filter feed-forward, H is time while W is frequency but in the horizontal filter feed-forward, H is frequency while W is time. The rationale is described in Pons et al. (2018) where the vertical and horizontal filters are trying to learn timbre and temporal features. Which is why in both filters it is reducing the dimensionality of the frequency while keeping the time axis intact. This always results in something akin to time series data.
+Note that in the vertical filter feed-forward, H is time while W is frequency but in the horizontal filter feed-forward, H is frequency while W is time. This mimics time series data modeling where tabular representation has time (as a column) where each row denotes the values at that time. The values of each features are the columns or the width, assuming HxW representation. The rationale is also described in Pons et al. (2018) where the filters are to learn features across the time axis. Both filters are reducing the dimensionality of the frequency while keeping the time axis intact. This always results in something akin to time series data. The result of vertical and horizontal convolutions are then concatenated to become a tensor with the time axis intact and the frequency bin axis reduced in dimensionality. This concatenation is the reason of separating the feed-forward for the front-end based on the filter shape.
 
-The result of vertical and horizontal convolutions are then concatenated to become a tensor with the time axis intact and the frequency bin axis reduced in dimensionality. This concatenation is the reason of separating the feed-forward for the front-end based on the filter shape. It will be clear during backpropagation.
+<!-- --- -->
 
----
-
-// ADD VISUAL ILLUSTRATIONS FOR THE FEED-FORWARD OF VERTICAL AND HORIZONTAL FILTERS
+<!-- // ADD VISUAL ILLUSTRATIONS FOR THE FEED-FORWARD OF VERTICAL AND HORIZONTAL FILTERS -->
 
 ## Feed-forward of vertical filter convolution
 
@@ -158,27 +158,31 @@ The concatenation process takes the output of both the vertical and horizontal f
 
 ## CNN
 
-The CNN back-end consists of 2 layers each with 1 filter of the same shape: 3xW. W is the width of the concatenated features; from the results of as shown in CHAPTER X.Y.Z, it is 2. The first convolution layer uses "valid" padding (no padding) while the second convolution layer uses "same" padding. Height is the time axis while the width is the concatenated feature axis. The activation function is ReLU. The output of this backend is the concatenated filters after ReLU.
+The CNN back-end consists of 2 layers each with 1 filter of shape 3xW. W is the width of the concatenated features; from the results of as shown in CHAPTER X.Y.Z, it is 2. This back-end accepts the input shape 6x2 from the front-end. The height of the kernel is the time axis while the width is the concatenated feature axis. In the implementation by Pons et al. (2018), the first convolution layer uses "valid" padding (no padding) while the second convolution layer uses "same" padding. Using no padding would result in the output shape of the first convolution to be smaller. Using the same calculations done in CHAPTER X.Y.Z, its shape is 4x1. To keep its shape and ease further calculations, both convolution layers will use "same" padding. The activation function for both layers is ReLU. The output of this back-end is the concatenated filters after ReLU.
 
 // ADD VISUALISATION
 
 ## CNN with GRU
 
-The CNN with GRU back-end consists of one layer of uni-directional GRU with 2 hidden layers. The input tensor is adapted to be of shape LxH_in where L is the sequence length or the height of the time axis and H_in is the width of the concatenated features; from the results of as shown in CHAPTER X.Y.Z, it is 2. The output of this backend is the final hidden state of GRU with shape LxH_out. H_out is set to 2.
-
-// ADD VISUALISATION + FLOWCHART
-
-## CNN with Self-Attention (implemented using Transformer)
-
-The CNN with Self-Attention back-end consists of one layer of Self-Attention with 2 heads.
-
-// ADD VISUALISATION + FLOWCHART
-
-# Classifier
+The CNN with GRU back-end consists of two layers of uni-directional GRU each with one hidden layer. This back-end accepts the input shape 6x2 from the front-end. This design is in line with Cho et al. (2014). When implemented using PyTorch, the number of hidden layers can be directly set to be 2 in one GRU layer instead. The input tensor is adapted to be of shape LxH_in where L is the sequence length or the height of the time axis and H_in is the width of the concatenated features; from the results of as shown in CHAPTER X.Y.Z, it is 2. The output of this back-end is the final hidden state of GRU with shape LxH_out. H_out is set to 2. The output of this back-end returns the features from the last hidden state for each time-step. The shape of it is the same as the input.
 
 // ADD VISUALISATION
 
-# Feed-forward
+## CNN with Self-Attention (implemented using Transformer)
+
+The CNN with Self-Attention back-end consists of two layers of Self-Attention each with 2 heads. Self-Attention is implemented as part of the encoder part of the Transformer. The transformer takes input an embedding vector. Given the output of the front-end is of shape 6x2, every time-step of it can be treated as 6 embedding vectors each with shape 1x2. In calculation, this is done simultaneously. The dimension of query, keys, and value is determined by Persamaan 2.12, where d_model equals 2 because the width of the concatenated feauters are 2 as shown in CHAPTER X.Y.Z and h (or head) equals 2. Therefore, d_k and d_v equals 1. Given there are two heads, this means that each head gets input of shape 6x1. After calculating the Self-Attention, the result from each head is concatenaed to be 6x2 again. The activation function in the feed-forward network portion of the architecture is ReLU. The output of this back-end.
+
+// ADD VISUALISATION
+
+# Classifier
+
+The classifier consists of a FC layer which takes 12 nodes as its input with 6 hidden nodes. The back-end output will be concatenated again to be of shape 12x1. The activation function for the FC and output layer is sigmoid. There are 3 output nodes corresponding to the three arbitrary labels set for this calculation.
+
+// ADD VISUALISATION
+
+<!-- # Log-Mel Spectrogram Calculation -->
+
+<!-- # Feed-forward -->
 
 # Backpropagation
 
