@@ -47,7 +47,7 @@ Gambar X.X visualises the front-end network assumption. Note that in the vertica
 
 ## Feed-Forward of Vertical Filter Convolution
 
-Given an input size of 6x5 with "same" padding, the output shape of the convolution is the same as the input shape. "Same" padding is also known as half padding. The amount of padding needed to achieve this is described in Domoulin (2016) where:
+Given an input size of 6x5 with "same" padding, the output shape of the convolution is the same as the input shape. "Same" padding is also known as half padding. The amount of padding needed to achieve this is described in Domoulin (2018) where:
 
 $$p=\left\lfloor{\frac{k}{2}}\right\rfloor$$
 
