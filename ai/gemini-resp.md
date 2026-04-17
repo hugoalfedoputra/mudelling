@@ -1,261 +1,334 @@
-Here is the verbose continuation for the "back-end" convolutional layers, following your exact formatting style.
+Before we define the backpropagation formulas, I must point out a slight mathematical inconsistency in how you wrote the feed-forward equations for the GRU.
 
-As a quick note for your feed-forward: it is standard in deep learning frameworks (like PyTorch/TensorFlow) that convolutional layers also have a bias term added after the cross-correlation sum, i.e., $z_{\text{c2}} = S_{\text{c2}}(...) + b_{\text{c2}}$. I have included the partial derivative for the bias below, as it is mathematically required for updating the network, even if it was implicitly omitted in your feed-forward equation.
+In your updated text, you wrote the weight matrices _outside_ the activation functions, such as $W_z \sigma(...)$. However, if you look closely at **Cho et al. (2014) Equations 5, 6, and 8**, the weights are strictly **inside** the activation functions. Furthermore, since your $O_{\text{Cc}(t)}$ and $h_{t}$ are **row vectors** of shape 1x2, matrix multiplication rules dictate that they must multiply the weight matrices from the left (i.e., $xW$, not $Wx$).
+
+To ensure the matrix shapes (1x2 and 2x2) correctly align during the backpropagation chain rule, I will use the mathematically correct standard for these feed-forward equations:
+
+- $\tilde{h}_t = \tanh(O_{\text{Cc}(t)} W_h + (r_t \odot h_{t-1}) U_h + b_h)$
+- $z_t = \sigma(O_{\text{Cc}(t)} W_z + h_{t-1} U_z + b_z)$
+- $r_t = \sigma(O_{\text{Cc}(t)} W_r + h_{t-1} U_r + b_r)$
+
+Here are the detailed, highly verbose backpropagation equations for the **CNN with GRU Back-End**. Backpropagation Through Time (BPTT) unfolds the network and calculates the gradients backwards from the last time-step ($t=6$) to the first ($t=1$).
+
+### CNN with GRU Back-End
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \operatorname*{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
+$$
+
+Note:
+
+1. $O_{\text{GRU}}$ is the concatenated output of the GRU.
+2. $\operatorname*{Reshape}(\cdot)$ reshapes the 12x1 gradient vector propagated from the Classifier back into a 6x2 matrix. Each row $t$ in this matrix represents the gradient flowing directly into the hidden state at that specific time-step, denoted as $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}(t)}}$ with shape 1x2.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta h_t} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}(t)}} + \frac{\delta L_{\text{BCE}}}{\delta h_t^{\text{next}}}
+$$
+
+Note:
+
+1. $t \in \{6, 5, 4, 3, 2, 1\}$ because BPTT steps backwards.
+2. $\frac{\delta L_{\text{BCE}}}{\delta h_t}$ (shape 1x2) is the total gradient accumulated at the hidden state $h_t$.
+3. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}(t)}}$ (shape 1x2) is the direct upstream gradient from the Classifier for time-step $t$.
+4. $\frac{\delta L_{\text{BCE}}}{\delta h_t^{\text{next}}}$ (shape 1x2) is the gradient passed backwards from the _subsequent_ time-step $t+1$. For the very last step ($t=6$), this value is an all-zero vector because there is no $t=7$.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t} = \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta \tilde{h}_t} \\
+= \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot (1 - z_t)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t}$ (shape 1x2) is the gradient with respect to the candidate hidden state.
+2. $\odot$ denotes element-wise multiplication.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_t} = \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta z_t} \\
+= \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot (h_{t-1} - \tilde{h}_t)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta z_t}$ (shape 1x2) is the gradient with respect to the update gate.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} = \frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t} \odot \frac{\delta \tilde{h}_t}{\delta z_{\tilde{h}_t}} \\
+= \frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t} \odot (1 - \tilde{h}_t \odot \tilde{h}_t)
+$$
+
+Note:
+
+1. $z_{\tilde{h}_t}$ denotes the linear pre-activation function before the $\tanh$ is applied: $z_{\tilde{h}_t} = O_{\text{Cc}(t)} W_h + (r_t \odot h_{t-1}) U_h + b_h$.
+2. $\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}}$ (shape 1x2) is the gradient of the candidate hidden state before the $\tanh$ activation. $(1 - \tilde{h}_t \odot \tilde{h}_t)$ is the derivative of the $\tanh$ function.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta r_t} = \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta (r_t \odot h_{t-1})} \right) \odot \frac{\delta (r_t \odot h_{t-1})}{\delta r_t} \\
+= \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} U_h^T \right) \odot h_{t-1}
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta r_t}$ (shape 1x2) is the gradient with respect to the reset gate.
+2. The term inside the parenthesis is a matrix multiplication between a 1x2 vector and a 2x2 transposed weight matrix, resulting in a 1x2 vector.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} = \frac{\delta L_{\text{BCE}}}{\delta r_t} \odot \frac{\delta r_t}{\delta z_{r_t}} \\
+= \frac{\delta L_{\text{BCE}}}{\delta r_t} \odot (r_t \odot (1 - r_t))
+$$
+
+Note:
+
+1. $z_{r_t}$ denotes the linear pre-activation before the sigmoid is applied: $z_{r_t} = O_{\text{Cc}(t)} W_r + h_{t-1} U_r + b_r$.
+2. $\frac{\delta L_{\text{BCE}}}{\delta z_{r_t}}$ (shape 1x2) is the gradient of the reset gate before the sigmoid activation. $(r_t \odot (1 - r_t))$ is the derivative of the sigmoid function.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} = \frac{\delta L_{\text{BCE}}}{\delta z_t} \odot \frac{\delta z_t}{\delta z_{z_t}} \\
+= \frac{\delta L_{\text{BCE}}}{\delta z_t} \odot (z_t \odot (1 - z_t))
+$$
+
+Note:
+
+1. $z_{z_t}$ denotes the linear pre-activation before the sigmoid is applied: $z_{z_t} = O_{\text{Cc}(t)} W_z + h_{t-1} U_z + b_z$.
+2. $\frac{\delta L_{\text{BCE}}}{\delta z_{z_t}}$ (shape 1x2) is the gradient of the update gate before the sigmoid activation.
+
+_(The following weight and bias gradients are accumulated over all time-steps $t=1$ to $6$)_
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta W_h} = \sum_{t=1}^6 \left( \left[ \frac{\delta z_{\tilde{h}_t}}{\delta W_h} \right]^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right) \\
+= \sum_{t=1}^6 \left( O_{\text{Cc}(t)}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta W_h}$ (shape 2x2) is the gradient for the candidate hidden state weight matrix $W_h$.
+2. $O_{\text{Cc}(t)}^T$ (shape 2x1) is multiplied by the 1x2 pre-activation gradient to produce a 2x2 gradient matrix.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta U_h} = \sum_{t=1}^6 \left( \left[ \frac{\delta z_{\tilde{h}_t}}{\delta U_h} \right]^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right) \\
+= \sum_{t=1}^6 \left( (r_t \odot h_{t-1})^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta U_h}$ (shape 2x2) is the gradient for the candidate hidden state recurrent weight matrix $U_h$.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta b_h} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta b_h} \right) \\
+= \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times 1 \right)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta b_h}$ (shape 1x2) is the gradient for the candidate hidden state bias. Similar summation logic applies to the remaining weights and biases for the update and reset gates as follows:
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta W_z} = \sum_{t=1}^6 \left( O_{\text{Cc}(t)}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta U_z} = \sum_{t=1}^6 \left( h_{t-1}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta b_z} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \right)
+$$
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta W_r} = \sum_{t=1}^6 \left( O_{\text{Cc}(t)}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta U_r} = \sum_{t=1}^6 \left( h_{t-1}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta b_r} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \right)
+$$
+
+_(End of weight gradient accumulation. Returning to BPTT sequence)_
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta h_{t-1}^{\text{next}}} = \left(\frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta h_{t-1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta h_{t-1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \times \frac{\delta z_{z_t}}{\delta h_{t-1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \times \frac{\delta z_{r_t}}{\delta h_{t-1}}\right) \\
+= \left( \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot z_t \right) + \left( \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} U_h^T \right) \odot r_t \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} U_z^T \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} U_r^T \right)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta h_{t-1}^{\text{next}}}$ (shape 1x2) is the total gradient passed backward from time-step $t$ to the previous hidden state $h_{t-1}$.
+2. Because $h_{t-1}$ is used in 4 different places during the forward pass (the direct $h_t$ equation, and the 3 pre-activations), the chain rule demands that we sum the gradients arriving from all 4 pathways.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}(t)}} = \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta O_{\text{Cc}(t)}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \times \frac{\delta z_{z_t}}{\delta O_{\text{Cc}(t)}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \times \frac{\delta z_{r_t}}{\delta O_{\text{Cc}(t)}} \right) \\
+= \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} W_h^T \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} W_z^T \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} W_r^T \right)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}(t)}}$ (shape 1x2) is the gradient propagated back to the CNN Front-End for a specific time step $t$.
+2. The final gradient matrix $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}}$ (shape 6x2) to be passed back to the Front-End Concatenation layer is constructed by vertically stacking these 1x2 row vectors from $t=1$ to $t=6$.
 
 ---
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})} \times \frac{\delta O_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})}{\delta z_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})} \\
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})} \times \mathbb{I}(z_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}}) > 0)
-$$
+Here are the detailed, highly verbose backpropagation equations for the **CNN with Self-Attention Back-End**.
 
-Note:
+In the Transformer architecture, operations are processed as full matrices rather than iteratively through time-steps like in the GRU. We define the intermediate variables for the Position-wise Feed-Forward Network (FFN) and the Multi-Head Attention (MHA) to make the derivatives clear.
 
-1. $i_{\text{c2}}$ and $j_{\text{c2}}$ are the row and column indices of the resulting feature map for the second convolution layer (c2).
-2. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c2}}}$ is the gradient map propagated from the flattening layer (calculated at the end of the previous section), reshaped back to a 6x2 matrix.
-3. $\frac{\delta O_{\text{c2}}}{\delta z_{\text{c2}}}$ is the derivative of the ReLU activation function. It is defined as an indicator function $\mathbb{I}(\cdot)$ which outputs 1 if $z_{\text{c2}} > 0$ and 0 otherwise.
+Let $d_{ff}$ be the hidden dimension of the FFN layer. Let $H_{\text{FFN}} = O_{\text{MHA}} W_1 + b_1$ be the pre-activation FFN matrix, and $A_{\text{FFN}} = \operatorname*{ReLU}(H_{\text{FFN}})$ be the post-activation matrix.
+
+### CNN with Self-Attention Back-End
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta K_{\text{c2}}(m_{\text{c2}}, n_{\text{c2}})}=\sum_{i_{\text{c2}}}\sum_{j_{\text{c2}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})} \times \frac{\delta z_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})}{\delta K_{\text{c2}}(m_{\text{c2}}, n_{\text{c2}})}\right) \\
-=\sum_{i_{\text{c2}}}\sum_{j_{\text{c2}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})} \times O_{\text{c1}}(i_{\text{c2}}+m_{\text{c2}}, j_{\text{c2}}+n_{\text{c2}})\right)
+\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} = \operatorname*{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
 $$
 
 Note:
 
-1. This is the partial derivative with respect to the kernel weights of the second convolution layer ($K_{\text{c2}}$).
-2. $m_{\text{c2}}$ and $n_{\text{c2}}$ are the row and column indices of the kernel.
-3. Mathematically, the gradient of the kernel is the cross-correlation between the input to this layer ($O_{\text{c1}}$) and the gradient map of its pre-activation ($z_{\text{c2}}$).
+1. $O_{\text{Attn}}$ is the final output of the Self-Attention back-end.
+2. $\operatorname*{Reshape}(\cdot)$ reshapes the 12x1 gradient vector propagated from the Classifier back into a 6x2 matrix (6 time-steps, 2 features).
+
+_(Starting with the Position-wise Feed-Forward Network Block)_
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta b_{\text{c2}}}=\sum_{i_{\text{c2}}}\sum_{j_{\text{c2}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}(i_{\text{c2}}, j_{\text{c2}})} \times 1\right)
-$$
-
-Note:
-
-1. $b_{\text{c2}}$ is the bias term for the second convolution layer. Its gradient is simply the sum of all elements in the error map $\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}}$.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})}=\sum_{m_{\text{c2}}}^{M_{\text{c2}}}\sum_{n_{\text{c2}}}^{N_{\text{c2}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}(i_{\text{c1}}-m_{\text{c2}}, j_{\text{c1}}-n_{\text{c2}})} \times \frac{\delta z_{\text{c2}}(...)}{\delta O_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})}\right) \\
-=\sum_{m_{\text{c2}}}^{M_{\text{c2}}}\sum_{n_{\text{c2}}}^{N_{\text{c2}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}(i_{\text{c1}}-m_{\text{c2}}, j_{\text{c1}}-n_{\text{c2}})} \times K_{\text{c2}}(m_{\text{c2}}, n_{\text{c2}})\right)
+\frac{\delta L_{\text{BCE}}}{\delta W_2} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta W_2} \\
+= A_{\text{FFN}}^T \times \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}}
 $$
 
 Note:
 
-1. This calculates the error propagated backwards to the output of the first convolution layer ($O_{\text{c1}}$).
-2. $i_{\text{c1}}$ and $j_{\text{c1}}$ are the row and column indices for the $O_{\text{c1}}$ matrix.
-3. Mathematically, the error propagated to the input of a convolutional layer is the "full convolution" of the error map ($\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c2}}}$) with a 180-degree flipped kernel ($K_{\text{c2}}$). This is reflected in the subtraction of the indices $(i_{\text{c1}}-m_{\text{c2}}, j_{\text{c1}}-n_{\text{c2}})$. Zero-padding is implicitly applied for out-of-bounds indices.
+1. $\frac{\delta L_{\text{BCE}}}{\delta W_2}$ (shape $d_{ff}$x2) is the gradient for the second linear transformation weight matrix in the FFN.
+2. $A_{\text{FFN}}^T$ (shape $d_{ff}$x6) is the transposed post-activation matrix.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times \mathbb{I}(z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}}) > 0)
-$$
-
-Note:
-
-1. Similar to Persamaan X.X (<REFERRING TO z_c2 EQ>), this applies the derivative of the ReLU activation function for the first convolution layer (c1).
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta K_{\text{c1}}(m_{\text{c1}}, n_{\text{c1}})}=\sum_{i_{\text{c1}}}\sum_{j_{\text{c1}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times O_{\text{Concat}}(i_{\text{c1}}+m_{\text{c1}}, j_{\text{c1}}+n_{\text{c1}})\right)
+\frac{\delta L_{\text{BCE}}}{\delta b_2} = \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta b_2} \right)\\
+= \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \right)
 $$
 
 Note:
 
-1. Similar to Persamaan X.X (<REFERRING TO K_c2 EQ>), this is the cross-correlation to find the gradient for the first layer's kernel weights ($K_{\text{c1}}$).
-2. $O_{\text{Concat}}$ is the input to this layer.
+1. $\frac{\delta L_{\text{BCE}}}{\delta b_2}$ (shape 1x2) is the gradient for the second bias vector. Since the bias is added to every row (time-step), its gradient is the sum of the incoming gradients across all 6 rows.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta b_{\text{c1}}}=\sum_{i_{\text{c1}}}\sum_{j_{\text{c1}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times 1\right)
-$$
-
-Note:
-
-1. This is the partial derivative for the bias term of the first convolution layer.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Concat}}(i_{\text{concat}}, j_{\text{concat}})}=\sum_{m_{\text{c1}}}^{M_{\text{c1}}}\sum_{n_{\text{c1}}}^{N_{\text{c1}}}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{concat}}-m_{\text{c1}}, j_{\text{concat}}-n_{\text{c1}})} \times K_{\text{c1}}(m_{\text{c1}}, n_{\text{c1}})\right)
+\frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta A_{\text{FFN}}} \\
+= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} W_2^T
 $$
 
 Note:
 
-1. Similar to Persamaan X.X (<REFERRING TO O_c1 EQ>), this propagates the error back to the concatenated matrix from the front-end ($O_{\text{Concat}}$).
-2. $i_{\text{concat}}$ and $j_{\text{concat}}$ are the row and column indices of the concatenated matrix, which has a shape of 6x2.
-
----
-
-Here is the revised section with the explicit 2-line chain rule expansions, explicit summation bounds, and the `"Concat"` to `"Cc"` subscript renaming applied exactly as you requested.
+1. $\frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}}$ (shape 6x$d_{ff}$) is the gradient passed back to the activated hidden layer of the FFN.
+2. $W_2^T$ is the transposed weight matrix of shape 2x$d_{ff}$.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times \frac{\delta O_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \\
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times \mathbb{I}(z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}}) > 0)
+\frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} = \frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}} \odot \frac{\delta A_{\text{FFN}}}{\delta H_{\text{FFN}}} \\
+= \frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}} \odot \mathbb{I}_{\mathbb{Z}^+}(H_{\text{FFN}})
 $$
 
 Note:
 
-1. Similar to Persamaan X.X (\<REFERRING TO z_c2 EQ\>), this applies the derivative of the ReLU activation function for the first convolution layer (c1).
+1. $\frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}}$ (shape 6x$d_{ff}$) is the gradient of the pre-activation hidden layer.
+2. $\mathbb{I}_{\mathbb{Z}^+}(\cdot)$ is the indicator function for the derivative of ReLU, evaluating to 1 where $H_{\text{FFN}} > 0$ and 0 otherwise.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta K_{\text{c1}}(m_{\text{c1}}, n_{\text{c1}})}=\sum_{i_{\text{c1}}=0}^{H_{\text{c1}}-1}\sum_{j_{\text{c1}}=0}^{W_{\text{c1}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times \frac{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})}{\delta K_{\text{c1}}(m_{\text{c1}}, n_{\text{c1}})}\right) \\
-=\sum_{i_{\text{c1}}=0}^{H_{\text{c1}}-1}\sum_{j_{\text{c1}}=0}^{W_{\text{c1}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times O_{\text{Cc}}(i_{\text{c1}}+m_{\text{c1}}, j_{\text{c1}}+n_{\text{c1}})\right)
-$$
-
-Note:
-
-1. Similar to Persamaan X.X (\<REFERRING TO K*c2 EQ\>), this is the cross-correlation to find the gradient for the first layer's kernel weights ($K*{\text{c1}}$).
-2. $O_{\text{Cc}}$ is the input to this layer.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta b_{\text{c1}}}=\sum_{i_{\text{c1}}=0}^{H_{\text{c1}}-1}\sum_{j_{\text{c1}}=0}^{W_{\text{c1}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times \frac{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})}{\delta b_{\text{c1}}}\right) \\
-=\sum_{i_{\text{c1}}=0}^{H_{\text{c1}}-1}\sum_{j_{\text{c1}}=0}^{W_{\text{c1}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{c1}}, j_{\text{c1}})} \times 1\right)
+\frac{\delta L_{\text{BCE}}}{\delta W_1} = \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \times \frac{\delta H_{\text{FFN}}}{\delta W_1} \\
+= O_{\text{MHA}}^T \times \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}}
 $$
 
 Note:
 
-1. This is the partial derivative for the bias term of the first convolution layer.
+1. $\frac{\delta L_{\text{BCE}}}{\delta W_1}$ (shape 2x$d_{ff}$) is the gradient for the first linear transformation weight matrix.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}(i_{\text{Cc}}, j_{\text{Cc}})}=\sum_{m_{\text{c1}}=0}^{M_{\text{c1}}-1}\sum_{n_{\text{c1}}=0}^{N_{\text{c1}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{Cc}}-m_{\text{c1}}, j_{\text{Cc}}-n_{\text{c1}})} \times \frac{\delta z_{\text{c1}}(i_{\text{Cc}}-m_{\text{c1}}, j_{\text{Cc}}-n_{\text{c1}})}{\delta O_{\text{Cc}}(i_{\text{Cc}}, j_{\text{Cc}})}\right) \\
-=\sum_{m_{\text{c1}}=0}^{M_{\text{c1}}-1}\sum_{n_{\text{c1}}=0}^{N_{\text{c1}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{c1}}(i_{\text{Cc}}-m_{\text{c1}}, j_{\text{Cc}}-n_{\text{c1}})} \times K_{\text{c1}}(m_{\text{c1}}, n_{\text{c1}})\right)
-$$
-
-Note:
-
-1. Similar to Persamaan X.X (\<REFERRING TO O*c1 EQ\>), this propagates the error back to the concatenated matrix from the front-end ($O*{\text{Cc}}$).
-2. $i_{\text{Cc}}$ and $j_{\text{Cc}}$ are the row and column indices of the concatenated matrix, which has a shape of 6x2.
-
----
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CV}}(i_{\text{concat}}, 1)} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Concat}}(i_{\text{concat}}, 1)}
-$$
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{concat}}, 1)} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Concat}}(i_{\text{concat}}, 2)}
+\frac{\delta L_{\text{BCE}}}{\delta b_1} = \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \times \frac{\delta H_{\text{FFN}}}{\delta b_1} \right) \\
+= \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \right)
 $$
 
 Note:
 
-1. Because the feed-forward concatenation operation `Concat(.)` joined $O_{\text{CV}}$ and $O_{\text{CH}}$ column-wise (along the frequency dimension/width axis), the backpropagation simply splits the gradient matrix back into its original parts.
-2. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CV}}}$ takes the first column ($j_{\text{concat}}=1$) of the error matrix, returning a 6x1 vector representing the gradient for the vertical filter's output.
-3. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}}$ takes the second column ($j_{\text{concat}}=2$) of the error matrix, returning a 6x1 vector representing the gradient for the horizontal filter's output.
+1. $\frac{\delta L_{\text{BCE}}}{\delta b_1}$ (shape 1x$d_{ff}$) is the gradient for the first bias vector.
 
----
-
-Here is the verbose backpropagation for the front-end, completing your equations from the concatenation layer all the way back to the input spectrogram.
-
-To ensure mathematical precision with the pooling operations you defined in your manualisation, I have introduced $A_{\text{CV}}$ (the output of the ReLU before max-pooling in the vertical branch) and $M_{\text{in}}$ (the output of the mean-pooling before the convolution in the horizontal branch).
-
----
+_(Transitioning to the Multi-Head Attention Block)_
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CV}}(i_{\text{CV}}, 0)}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}(i_{\text{CV}}, 0)} \times \frac{\delta O_{\text{Cc}}(i_{\text{CV}}, 0)}{\delta O_{\text{CV}}(i_{\text{CV}}, 0)} \\
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}(i_{\text{CV}}, 0)} \times 1
+\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} = \left(\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta O_{\text{MHA}}}\right)_{\text{residual}} + \left(\frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \times \frac{\delta H_{\text{FFN}}}{\delta O_{\text{MHA}}}\right)_{\text{FFN}} \\
+= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} + \left( \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} W_1^T \right)
 $$
 
 Note:
 
-1. $i_{\text{CV}}$ iterates from $0$ to $H_{\text{CV}}-1$.
-2. Because $O_{\text{Cc}}$ concatenates $O_{\text{CV}}$ and $O_{\text{CH}}$ column-wise, $O_{\text{CV}}$ corresponds perfectly to the 0-th column (index 0) of the concatenated error matrix.
+1. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}}$ (shape 6x2) is the total gradient accumulating at the output of the MHA block.
+2. Because of the residual connection around the FFN ($O_{\text{Attn}} = O_{\text{MHA}} + \text{FFN}(O_{\text{MHA}})$), the chain rule demands that we sum the direct gradient bypassing the FFN and the gradient flowing _through_ the FFN.
+
+Let $C_{\text{heads}} = \text{Concat}(\text{head}_1, \text{head}_2)$ be the 6x2 concatenated matrix from the two attention heads.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{CH}}, 0)}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}(i_{\text{CH}}, 1)} \times \frac{\delta O_{\text{Cc}}(i_{\text{CH}}, 1)}{\delta O_{\text{CH}}(i_{\text{CH}}, 0)} \\
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}(i_{\text{CH}}, 1)} \times 1
-$$
-
-Note:
-
-1. $i_{\text{CH}}$ iterates from $0$ to $H_{\text{CH}}-1$.
-2. $O_{\text{CH}}$ corresponds to the 1-st column (index 1) of the concatenated error matrix.
-
-### Backpropagation of the Vertical Filter Branch
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta A_{\text{CV}}(i_{\text{ACV}}, j_{\text{ACV}})}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CV}}(i_{\text{ACV}}, 0)} \times \frac{\delta O_{\text{CV}}(i_{\text{ACV}}, 0)}{\delta A_{\text{CV}}(i_{\text{ACV}}, j_{\text{ACV}})} \\
-= \begin{cases}
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CV}}(i_{\text{ACV}}, 0)} \times 1 & \text{if } j_{\text{ACV}} = \operatorname*{argmax}_{w} A_{\text{CV}}(i_{\text{ACV}}, w) \\
-0 & \text{otherwise}
-\end{cases}
+\frac{\delta L_{\text{BCE}}}{\delta W^O} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times \frac{\delta O_{\text{MHA}}}{\delta W^O} \\
+= C_{\text{heads}}^T \times \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}}
 $$
 
 Note:
 
-1. $A_{\text{CV}}$ is the intermediate matrix after the ReLU activation but before the max-pooling operation.
-2. $i_{\text{ACV}}$ iterates from $0$ to $H_{\text{ACV}}-1$, and $j_{\text{ACV}}$ iterates from $0$ to $W_{\text{ACV}}-1$.
-3. The max-pooling operation routes the gradient _only_ to the specific frequency bin (column index $w$) that contained the maximum value during the feed-forward pass. All other elements in that row receive a gradient of 0.
+1. $\frac{\delta L_{\text{BCE}}}{\delta W^O}$ (shape 2x2) is the gradient for the final output projection weight matrix of the MHA block.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})}=\frac{\delta L_{\text{BCE}}}{\delta A_{\text{CV}}(i_{\text{V}}, j_{\text{V}})} \times \frac{\delta A_{\text{CV}}(i_{\text{V}}, j_{\text{V}})}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})} \\
-=\frac{\delta L_{\text{BCE}}}{\delta A_{\text{CV}}(i_{\text{V}}, j_{\text{V}})} \times \mathbb{I}(z_{\text{V}}(i_{\text{V}}, j_{\text{V}}) > 0)
+\frac{\delta L_{\text{BCE}}}{\delta C_{\text{heads}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times \frac{\delta O_{\text{MHA}}}{\delta C_{\text{heads}}} \\
+= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} (W^O)^T
 $$
 
 Note:
 
-1. This applies the derivative of the ReLU activation function for the vertical convolution layer.
+1. $\frac{\delta L_{\text{BCE}}}{\delta C_{\text{heads}}}$ (shape 6x2) is the gradient flowing back into the concatenated heads.
+2. This 6x2 matrix is split vertically into two 6x1 matrices: $\frac{\delta L_{\text{BCE}}}{\delta \text{head}_1}$ and $\frac{\delta L_{\text{BCE}}}{\delta \text{head}_2}$, which are routed to their respective attention head calculations.
+
+_(Inside each Attention Head $i$ where $i \in \{1, 2\}$)_
+
+Let $S_i = \frac{Q_i K_i^T}{\sqrt{d_k}}$ be the 6x6 scaled attention score matrix before softmax, and let $P_i = \text{softmax}(S_i)$ be the 6x6 attention probability matrix.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta K_{\text{V}}(m_{\text{V}}, n_{\text{V}})}=\sum_{i_{\text{V}}=0}^{H_{\text{V}}-1}\sum_{j_{\text{V}}=0}^{W_{\text{V}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})} \times \frac{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})}{\delta K_{\text{V}}(m_{\text{V}}, n_{\text{V}})}\right) \\
-=\sum_{i_{\text{V}}=0}^{H_{\text{V}}-1}\sum_{j_{\text{V}}=0}^{W_{\text{V}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})} \times I(i_{\text{V}}+m_{\text{V}}, j_{\text{V}}+n_{\text{V}})\right)
-$$
-
-Note:
-
-1. This is the cross-correlation to find the gradient for the vertical filter's kernel weights ($K_{\text{V}}$).
-2. $I$ is the initial log-mel spectrogram input.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta b_{\text{V}}}=\sum_{i_{\text{V}}=0}^{H_{\text{V}}-1}\sum_{j_{\text{V}}=0}^{W_{\text{V}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})} \times \frac{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})}{\delta b_{\text{V}}}\right) \\
-=\sum_{i_{\text{V}}=0}^{H_{\text{V}}-1}\sum_{j_{\text{V}}=0}^{W_{\text{V}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})} \times 1\right)
+\frac{\delta L_{\text{BCE}}}{\delta V_i} = \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i} \times \frac{\delta \text{head}_i}{\delta V_i} \\
+= P_i^T \times \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i}
 $$
 
 Note:
 
-1. This is the partial derivative for the bias term of the vertical convolution layer.
-
-### Backpropagation of the Horizontal Filter Branch
+1. $\frac{\delta L_{\text{BCE}}}{\delta V_i}$ (shape 6x1) is the gradient for the Value matrix of head $i$.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{H}}, 0)}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{H}}, 0)} \times \frac{\delta O_{\text{CH}}(i_{\text{H}}, 0)}{\delta z_{\text{H}}(i_{\text{H}}, 0)} \\
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{H}}, 0)} \times \mathbb{I}(z_{\text{H}}(i_{\text{H}}, 0) > 0)
+\frac{\delta L_{\text{BCE}}}{\delta P_i} = \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i} \times \frac{\delta \text{head}_i}{\delta P_i} \\
+= \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i} V_i^T
 $$
 
 Note:
 
-1. This applies the derivative of the ReLU activation function for the horizontal convolution layer.
-2. Because the horizontal branch uses 1D convolution over the time axis, the second index is fixed to $0$ (representing a 1D column vector).
+1. $\frac{\delta L_{\text{BCE}}}{\delta P_i}$ (shape 6x6) is the gradient for the Softmax probabilities. $V_i^T$ has shape 1x6.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta K_{\text{H}}(m_{\text{H}})}=\sum_{i_{\text{H}}=0}^{H_{\text{H}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{H}}, 0)} \times \frac{\delta z_{\text{H}}(i_{\text{H}}, 0)}{\delta K_{\text{H}}(m_{\text{H}})}\right) \\
-=\sum_{i_{\text{H}}=0}^{H_{\text{H}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{H}}, 0)} \times M_{\text{in}}(i_{\text{H}}+m_{\text{H}}, 0)\right)
-$$
-
-Note:
-
-1. $m_{\text{H}}$ iterates from $0$ to $M_{\text{H}}-1$. Because $K_{\text{H}}$ is a 1D kernel operating over the sequence length, it only requires one spatial iterator.
-2. $M_{\text{in}}$ is the intermediate output vector from the mean-pooling layer that acts as the input to this convolution.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta b_{\text{H}}}=\sum_{i_{\text{H}}=0}^{H_{\text{H}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{H}}, 0)} \times \frac{\delta z_{\text{H}}(i_{\text{H}}, 0)}{\delta b_{\text{H}}}\right) \\
-=\sum_{i_{\text{H}}=0}^{H_{\text{H}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{H}}, 0)} \times 1\right)
+\frac{\delta L_{\text{BCE}}}{\delta S_i} = \frac{\delta L_{\text{BCE}}}{\delta P_i} \times \frac{\delta P_i}{\delta S_i} \\
+= P_i \odot \left( \frac{\delta L_{\text{BCE}}}{\delta P_i} - \sum_{\text{cols}} \left( \frac{\delta L_{\text{BCE}}}{\delta P_i} \odot P_i \right) \right)
 $$
 
 Note:
 
-1. This is the partial derivative for the bias term of the horizontal convolution layer.
+1. $\frac{\delta L_{\text{BCE}}}{\delta S_i}$ (shape 6x6) is the gradient for the pre-softmax attention scores.
+2. Because softmax is applied row-wise, the Jacobian derivative requires us to subtract the sum of the elements across the columns (row sum) from the incoming gradient, element-wise multiplied by the softmax probabilities themselves.
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta M_{\text{in}}(i_{\text{Min}}, 0)}=\sum_{m_{\text{H}}=0}^{M_{\text{H}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{Min}}-m_{\text{H}}, 0)} \times \frac{\delta z_{\text{H}}(i_{\text{Min}}-m_{\text{H}}, 0)}{\delta M_{\text{in}}(i_{\text{Min}}, 0)}\right) \\
-=\sum_{m_{\text{H}}=0}^{M_{\text{H}}-1}\left(\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{Min}}-m_{\text{H}}, 0)} \times K_{\text{H}}(m_{\text{H}})\right)
-$$
-
-Note:
-
-1. This propagates the error backward through the 1D horizontal convolution using a full convolution (subtraction of indices). Out-of-bounds indices evaluate to $0$.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta I_{\text{H\_branch}}(i_{\text{Min}}, j_{\text{I}})}=\frac{\delta L_{\text{BCE}}}{\delta M_{\text{in}}(i_{\text{Min}}, 0)} \times \frac{\delta M_{\text{in}}(i_{\text{Min}}, 0)}{\delta I_{\text{H\_branch}}(i_{\text{Min}}, j_{\text{I}})} \\
-=\frac{\delta L_{\text{BCE}}}{\delta M_{\text{in}}(i_{\text{Min}}, 0)} \times \frac{1}{W_{\text{I}}}
+\frac{\delta L_{\text{BCE}}}{\delta Q_i} = \frac{\delta L_{\text{BCE}}}{\delta S_i} \times \frac{\delta S_i}{\delta Q_i} \\
+= \frac{1}{\sqrt{d_k}} \left( \frac{\delta L_{\text{BCE}}}{\delta S_i} K_i \right)
 $$
 
 Note:
 
-1. This propagates the error backward through the mean-pooling layer to the original input matrix $I$.
-2. $j_{\text{I}}$ iterates from $0$ to $W_{\text{I}}-1$ (the width of the frequency bin axis, which is 5). Mean-pooling averages the inputs, so the gradient is distributed equally across all $W_{\text{I}}$ elements in the pooling window.
-3. _(Optional Note)_: If calculating the total gradient of the original input matrix $I$ is required, it is the sum of the gradients passed back from both the vertical branch and the horizontal branch: $\delta I_{\text{total}} = \delta I_{\text{V\_branch}} + \delta I_{\text{H\_branch}}$.
+1. $\frac{\delta L_{\text{BCE}}}{\delta Q_i}$ (shape 6x1) is the gradient for the Query matrix of head $i$.
+2. $d_k = 1$ based on the network assumptions.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta K_i} = \frac{\delta L_{\text{BCE}}}{\delta S_i} \times \frac{\delta S_i}{\delta K_i} \\
+= \frac{1}{\sqrt{d_k}} \left( \left(\frac{\delta L_{\text{BCE}}}{\delta S_i}\right)^T Q_i \right)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta K_i}$ (shape 6x1) is the gradient for the Key matrix of head $i$. Note the transpose on the incoming score gradient matrix.
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta W_i^Q} = O_{\text{Cc}}^T \times \frac{\delta L_{\text{BCE}}}{\delta Q_i} \quad ; \quad \frac{\delta L_{\text{BCE}}}{\delta W_i^K} = O_{\text{Cc}}^T \times \frac{\delta L_{\text{BCE}}}{\delta K_i} \quad ; \quad \frac{\delta L_{\text{BCE}}}{\delta W_i^V} = O_{\text{Cc}}^T \times \frac{\delta L_{\text{BCE}}}{\delta V_i}
+$$
+
+Note:
+
+1. These are the gradients for the Query, Key, and Value linear projection weight matrices for head $i$. All have shape 2x1. $O_{\text{Cc}}^T$ has shape 2x6.
+
+_(Final Gradient passed to the CNN Front-End)_
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}} = \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \right)_{\text{residual}} + \sum_{i=1}^2 \left( \left[ \frac{\delta L_{\text{BCE}}}{\delta Q_i} \times \frac{\delta Q_i}{\delta O_{\text{Cc}}} \right] + \left[ \frac{\delta L_{\text{BCE}}}{\delta K_i} \times \frac{\delta K_i}{\delta O_{\text{Cc}}} \right] + \left[ \frac{\delta L_{\text{BCE}}}{\delta V_i} \times \frac{\delta V_i}{\delta O_{\text{Cc}}} \right] \right) \\
+= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} + \sum_{i=1}^2 \left( \frac{\delta L_{\text{BCE}}}{\delta Q_i} (W_i^Q)^T + \frac{\delta L_{\text{BCE}}}{\delta K_i} (W_i^K)^T + \frac{\delta L_{\text{BCE}}}{\delta V_i} (W_i^V)^T \right)
+$$
+
+Note:
+
+1. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}}$ (shape 6x2) is the total accumulated gradient passed back to the Front-End concatenation layer.
+2. Because $O_{\text{Cc}}$ branches out into the residual connection, and into the $Q_i, K_i, V_i$ matrices for _both_ heads, the chain rule dictates that the total gradient is the sum of the gradients propagated backward from all 7 pathways (1 residual + 3 matrices $\times$ 2 heads).
