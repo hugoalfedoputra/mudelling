@@ -1,334 +1,160 @@
-Before we define the backpropagation formulas, I must point out a slight mathematical inconsistency in how you wrote the feed-forward equations for the GRU.
+This is a rigorous validation of your backpropagation chapters and feed-forward transposes. You have done an excellent job laying down the mathematical foundations, but when moving from scalar calculus to matrix calculus (especially in GRU and Attention), **several transpose operations, gradient direction indices (e.g., $t+1$ vs $t-1$), and matrix multiplication orders were incorrectly placed or missing.**
 
-In your updated text, you wrote the weight matrices _outside_ the activation functions, such as $W_z \sigma(...)$. However, if you look closely at **Cho et al. (2014) Equations 5, 6, and 8**, the weights are strictly **inside** the activation functions. Furthermore, since your $O_{\text{Cc}(t)}$ and $h_{t}$ are **row vectors** of shape 1x2, matrix multiplication rules dictate that they must multiply the weight matrices from the left (i.e., $xW$, not $Wx$).
+Matrix multiplication is not commutative ($AB \neq BA$). The golden rule of matrix calculus for a linear layer $Y = XW$ is: $\frac{\partial L}{\partial X} = \frac{\partial L}{\partial Y} W^T$ and $\frac{\partial L}{\partial W} = X^T \frac{\partial L}{\partial Y}$. Many of your equations violated this rule, resulting in mismatched dimension shapes.
 
-To ensure the matrix shapes (1x2 and 2x2) correctly align during the backpropagation chain rule, I will use the mathematically correct standard for these feed-forward equations:
-
-- $\tilde{h}_t = \tanh(O_{\text{Cc}(t)} W_h + (r_t \odot h_{t-1}) U_h + b_h)$
-- $z_t = \sigma(O_{\text{Cc}(t)} W_z + h_{t-1} U_z + b_z)$
-- $r_t = \sigma(O_{\text{Cc}(t)} W_r + h_{t-1} U_r + b_r)$
-
-Here are the detailed, highly verbose backpropagation equations for the **CNN with GRU Back-End**. Backpropagation Through Time (BPTT) unfolds the network and calculates the gradients backwards from the last time-step ($t=6$) to the first ($t=1$).
-
-### CNN with GRU Back-End
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \operatorname*{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
-$$
-
-Note:
-
-1. $O_{\text{GRU}}$ is the concatenated output of the GRU.
-2. $\operatorname*{Reshape}(\cdot)$ reshapes the 12x1 gradient vector propagated from the Classifier back into a 6x2 matrix. Each row $t$ in this matrix represents the gradient flowing directly into the hidden state at that specific time-step, denoted as $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}(t)}}$ with shape 1x2.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta h_t} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}(t)}} + \frac{\delta L_{\text{BCE}}}{\delta h_t^{\text{next}}}
-$$
-
-Note:
-
-1. $t \in \{6, 5, 4, 3, 2, 1\}$ because BPTT steps backwards.
-2. $\frac{\delta L_{\text{BCE}}}{\delta h_t}$ (shape 1x2) is the total gradient accumulated at the hidden state $h_t$.
-3. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}(t)}}$ (shape 1x2) is the direct upstream gradient from the Classifier for time-step $t$.
-4. $\frac{\delta L_{\text{BCE}}}{\delta h_t^{\text{next}}}$ (shape 1x2) is the gradient passed backwards from the _subsequent_ time-step $t+1$. For the very last step ($t=6$), this value is an all-zero vector because there is no $t=7$.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t} = \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta \tilde{h}_t} \\
-= \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot (1 - z_t)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t}$ (shape 1x2) is the gradient with respect to the candidate hidden state.
-2. $\odot$ denotes element-wise multiplication.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta z_t} = \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta z_t} \\
-= \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot (h_{t-1} - \tilde{h}_t)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta z_t}$ (shape 1x2) is the gradient with respect to the update gate.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} = \frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t} \odot \frac{\delta \tilde{h}_t}{\delta z_{\tilde{h}_t}} \\
-= \frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t} \odot (1 - \tilde{h}_t \odot \tilde{h}_t)
-$$
-
-Note:
-
-1. $z_{\tilde{h}_t}$ denotes the linear pre-activation function before the $\tanh$ is applied: $z_{\tilde{h}_t} = O_{\text{Cc}(t)} W_h + (r_t \odot h_{t-1}) U_h + b_h$.
-2. $\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}}$ (shape 1x2) is the gradient of the candidate hidden state before the $\tanh$ activation. $(1 - \tilde{h}_t \odot \tilde{h}_t)$ is the derivative of the $\tanh$ function.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta r_t} = \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta (r_t \odot h_{t-1})} \right) \odot \frac{\delta (r_t \odot h_{t-1})}{\delta r_t} \\
-= \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} U_h^T \right) \odot h_{t-1}
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta r_t}$ (shape 1x2) is the gradient with respect to the reset gate.
-2. The term inside the parenthesis is a matrix multiplication between a 1x2 vector and a 2x2 transposed weight matrix, resulting in a 1x2 vector.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} = \frac{\delta L_{\text{BCE}}}{\delta r_t} \odot \frac{\delta r_t}{\delta z_{r_t}} \\
-= \frac{\delta L_{\text{BCE}}}{\delta r_t} \odot (r_t \odot (1 - r_t))
-$$
-
-Note:
-
-1. $z_{r_t}$ denotes the linear pre-activation before the sigmoid is applied: $z_{r_t} = O_{\text{Cc}(t)} W_r + h_{t-1} U_r + b_r$.
-2. $\frac{\delta L_{\text{BCE}}}{\delta z_{r_t}}$ (shape 1x2) is the gradient of the reset gate before the sigmoid activation. $(r_t \odot (1 - r_t))$ is the derivative of the sigmoid function.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} = \frac{\delta L_{\text{BCE}}}{\delta z_t} \odot \frac{\delta z_t}{\delta z_{z_t}} \\
-= \frac{\delta L_{\text{BCE}}}{\delta z_t} \odot (z_t \odot (1 - z_t))
-$$
-
-Note:
-
-1. $z_{z_t}$ denotes the linear pre-activation before the sigmoid is applied: $z_{z_t} = O_{\text{Cc}(t)} W_z + h_{t-1} U_z + b_z$.
-2. $\frac{\delta L_{\text{BCE}}}{\delta z_{z_t}}$ (shape 1x2) is the gradient of the update gate before the sigmoid activation.
-
-_(The following weight and bias gradients are accumulated over all time-steps $t=1$ to $6$)_
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta W_h} = \sum_{t=1}^6 \left( \left[ \frac{\delta z_{\tilde{h}_t}}{\delta W_h} \right]^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right) \\
-= \sum_{t=1}^6 \left( O_{\text{Cc}(t)}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta W_h}$ (shape 2x2) is the gradient for the candidate hidden state weight matrix $W_h$.
-2. $O_{\text{Cc}(t)}^T$ (shape 2x1) is multiplied by the 1x2 pre-activation gradient to produce a 2x2 gradient matrix.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta U_h} = \sum_{t=1}^6 \left( \left[ \frac{\delta z_{\tilde{h}_t}}{\delta U_h} \right]^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right) \\
-= \sum_{t=1}^6 \left( (r_t \odot h_{t-1})^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta U_h}$ (shape 2x2) is the gradient for the candidate hidden state recurrent weight matrix $U_h$.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta b_h} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta b_h} \right) \\
-= \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times 1 \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta b_h}$ (shape 1x2) is the gradient for the candidate hidden state bias. Similar summation logic applies to the remaining weights and biases for the update and reset gates as follows:
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta W_z} = \sum_{t=1}^6 \left( O_{\text{Cc}(t)}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta U_z} = \sum_{t=1}^6 \left( h_{t-1}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta b_z} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \right)
-$$
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta W_r} = \sum_{t=1}^6 \left( O_{\text{Cc}(t)}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta U_r} = \sum_{t=1}^6 \left( h_{t-1}^T \times \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \right) ; \quad \frac{\delta L_{\text{BCE}}}{\delta b_r} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \right)
-$$
-
-_(End of weight gradient accumulation. Returning to BPTT sequence)_
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta h_{t-1}^{\text{next}}} = \left(\frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta h_{t-1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta h_{t-1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \times \frac{\delta z_{z_t}}{\delta h_{t-1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \times \frac{\delta z_{r_t}}{\delta h_{t-1}}\right) \\
-= \left( \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot z_t \right) + \left( \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} U_h^T \right) \odot r_t \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} U_z^T \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} U_r^T \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta h_{t-1}^{\text{next}}}$ (shape 1x2) is the total gradient passed backward from time-step $t$ to the previous hidden state $h_{t-1}$.
-2. Because $h_{t-1}$ is used in 4 different places during the forward pass (the direct $h_t$ equation, and the 3 pre-activations), the chain rule demands that we sum the gradients arriving from all 4 pathways.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}(t)}} = \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} \times \frac{\delta z_{\tilde{h}_t}}{\delta O_{\text{Cc}(t)}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} \times \frac{\delta z_{z_t}}{\delta O_{\text{Cc}(t)}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} \times \frac{\delta z_{r_t}}{\delta O_{\text{Cc}(t)}} \right) \\
-= \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}_t}} W_h^T \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z_t}} W_z^T \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r_t}} W_r^T \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}(t)}}$ (shape 1x2) is the gradient propagated back to the CNN Front-End for a specific time step $t$.
-2. The final gradient matrix $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}}$ (shape 6x2) to be passed back to the Front-End Concatenation layer is constructed by vertically stacking these 1x2 row vectors from $t=1$ to $t=6$.
+Here is the comprehensive validation and exactly what you need to revise, step-by-step.
 
 ---
 
-Here are the detailed, highly verbose backpropagation equations for the **CNN with Self-Attention Back-End**.
+### PART 1: Classifier & General Transpose Validation (Feed-Forward)
 
-In the Transformer architecture, operations are processed as full matrices rather than iteratively through time-steps like in the GRU. We define the intermediate variables for the Position-wise Feed-Forward Network (FFN) and the Multi-Head Attention (MHA) to make the derivatives clear.
+**1. The Classifier Output Shape Mismatch**
 
-Let $d_{ff}$ be the hidden dimension of the FFN layer. Let $H_{\text{FFN}} = O_{\text{MHA}} W_1 + b_1$ be the pre-activation FFN matrix, and $A_{\text{FFN}} = \operatorname*{ReLU}(H_{\text{FFN}})$ be the post-activation matrix.
+- **Where in text:** `### Classifier` (Feed-Forward chapter)
+- **Current text:** $z_O=O_{\text{FC}} W_O + b_O$
+- **The Issue:** You stated $O_{\text{FC}}$ is a flattened vector of shape `12x1`. If $W_O$ has shape `12x3` (12 input nodes, 3 output nodes), you **cannot** mathematically calculate $O_{\text{FC}} W_O$ because `(12x1) * (12x3)` is an invalid matrix multiplication.
+- **Revision needed:** You must transpose $O_{\text{FC}}$ so the multiplication becomes `(1x12) * (12x3) = 1x3`.
+    - **Change the equation to:** $z_O=O_{\text{FC}}^T W_O + b_O$
+    - **Cascade change in Backprop:** In the `### Classifier` backprop section, the equation $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}(i)}}$ is conceptually fine as a summation, but to express it strictly in matrix form later, note that $\frac{\delta L_{\text{BCE}}}{\delta W_{O}} = O_{\text{FC}} \left[\frac{\delta L_{\text{BCE}}}{\delta z_O}\right]^T$ which results in a `12x3` matrix. Your element-wise equation for $W_{O(j,n)}$ handles this correctly, so no equation change is needed there, but keep the `12x1` vs `1x12` vector orientation in mind.
 
-### CNN with Self-Attention Back-End
+**2. Typo in Feed-Forward Self-Attention FFN**
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} = \operatorname*{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
-$$
+- **Where in text:** `### CNN with Self-Attention Back-End` (Backprop chapter, early definitions)
+- **Current text:** $z_{\text{FFN}(1)}=O_{\text{MHA}}^TW_1+b_1$
+- **The Issue:** $O_{\text{MHA}}$ is `6x2`. $W_1$ is `2x2`. If you transpose $O_{\text{MHA}}$ to `2x6`, you cannot multiply it by `2x2`. The transpose here is an error.
+- **Revision needed:** Remove the transpose.
+    - **Change the equation to:** $z_{\text{FFN}(1)}=O_{\text{MHA}} W_1+b_1$
 
-Note:
+---
 
-1. $O_{\text{Attn}}$ is the final output of the Self-Attention back-end.
-2. $\operatorname*{Reshape}(\cdot)$ reshapes the 12x1 gradient vector propagated from the Classifier back into a 6x2 matrix (6 time-steps, 2 features).
+### PART 2: CNN with GRU Back-End Validations & Revisions
 
-_(Starting with the Position-wise Feed-Forward Network Block)_
+There are three major issues here:
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta W_2} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta W_2} \\
-= A_{\text{FFN}}^T \times \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}}
-$$
+1. Transpose mismatch in Flattening/Reshaping.
+2. Missing transposes on the weight matrix derivations.
+3. The recursive sequence index is moving forward ($t+1$) instead of backward ($t-1$).
 
-Note:
+**1. Reshape and Transpose from Flattened Output**
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta W_2}$ (shape $d_{ff}$x2) is the gradient for the second linear transformation weight matrix in the FFN.
-2. $A_{\text{FFN}}^T$ (shape $d_{ff}$x6) is the transposed post-activation matrix.
+- **Where in text:** `### CNN with GRU Back-End` (Backprop chapter)
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \operatorname*{Reshape}\left( \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}} \right]^T, (2, 6) \right)$
+- **The Issue:** In the Feed-Forward text, you specified: _"In this case, the output is 2x6, concatenated then transposed, then flattened to 12x1."_ If $O_{\text{FC}}$ is `12x1`, its gradient $\frac{\delta L}{\delta O_{\text{FC}}}$ is also `12x1`. Taking the transpose makes it `1x12`, reshaping it to `(2,6)` gives a `2x6` matrix. **However**, $O_{\text{GRU}}$ is the un-transposed state, which has shape `6x2`. Therefore, you must transpose it _after_ reshaping to return it to `6x2`.
+- **Revision needed:**
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \left[ \operatorname*{Reshape}\left( \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}} \right]^T, (2, 6) \right) \right]^T$
+    - **Add Note:** `Note: The transpose after the Reshape operation reverses the transpose operation that occurred before the flattening in the feed-forward stage, returning the gradient matrix to shape 6x2.`
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta b_2} = \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta b_2} \right)\\
-= \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \right)
-$$
+**2. The Recursive Backpropagation Direction**
 
-Note:
+- **Where in text:** Under GRU Back-End, `The gradient recursion is defined as:` and `...The recursive case is defined as...`
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta h_t} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} + \frac{\delta O_{\text{GRU}}}{\delta h_{t+1}}$ and later $\frac{\delta L_{\text{BCE}}}{\delta h_{t+1}} = ...$
+- **The Issue:** In Backpropagation Through Time (BPTT), time moves backwards. The gradient at time $t$ passes down to $t-1$. Your equations state that the gradient calculates $h_{t+1}$. It must be $h_{t-1}$. Also, the notation $\frac{\delta O_{\text{GRU}}}{\delta h_{t+1}}$ is mathematically sloppy.
+- **Revision needed:**
+    - **Change the first recursion equation to:**
+      $$ \frac{\delta L*{\text{BCE}}}{\delta h_t} = \left[ \frac{\delta L*{\text{BCE}}}{\delta O*{\text{GRU}}} \right]\_t + \frac{\delta L*{\text{BCE}}}{\delta h*{t}} \text{ (from } t+1 \text{)} $$
+        *(Wait, let's make it much simpler and mathematically sound as BPTT usually writes it):*
+        $$ \frac{\delta L*{\text{BCE}}}{\delta h*t} = \left[ \frac{\delta L*{\text{BCE}}}{\delta O*{\text{GRU}}} \right]\_t + \frac{\delta L*{\text{BCE}}}{\delta h*{t+1}} \frac{\delta h*{t+1}}{\delta h_t} $$
+    - **Change Note 2 under this equation to:** `2. If $t=6$ (the last time-step), the gradient from the future $\frac{\delta L_{\text{BCE}}}{\delta h_{t+1}} = 0$. The backpropagation iterates backwards from $t=6$ to $t=1$.`
+    - **Change the large recursive case equation (where you sum the gates) to calculate $h_{t-1}$:**
+      $$ \frac{\delta L*{\text{BCE}}}{\delta h*{t-1}} = \left( \frac{\delta L*{\text{BCE}}}{\delta h_t} \odot z_t \right) + \left( \left( U_h^T \frac{\delta L*{\text{BCE}}}{\delta z*{\tilde{h}(t)}} \right) \odot r_t \right) + \left( U_z^T \frac{\delta L*{\text{BCE}}}{\delta z*{z(t)}} \right) + \left( U_r^T \frac{\delta L*{\text{BCE}}}{\delta z\_{r(t)}} \right) $$
+    - **Notice the transposes added to $U_h, U_z, U_r$.** Matrix calculus requires the weight matrix to be transposed when propagating error to the inputs.
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta b_2}$ (shape 1x2) is the gradient for the second bias vector. Since the bias is added to every row (time-step), its gradient is the sum of the incoming gradients across all 6 rows.
+**3. GRU Weight Gradient Shapes and Matrix Order**
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta A_{\text{FFN}}} \\
-= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} W_2^T
-$$
+- **Where in text:** Weight derivations $\frac{\delta L_{\text{BCE}}}{\delta W_h}, \frac{\delta L_{\text{BCE}}}{\delta U_h}, \text{etc.}$
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta W_h} = \dots \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times O_{\text{Cc}(t)}\right)$
+- **The Issue:** If $z$ is `2x1` and $O_{\text{Cc}(t)}$ is `2x1`, a regular multiplication ($\times$) is invalid or results in scalar multiplication. You need an **outer product** to generate a `2x2` weight gradient matrix. The formula is $dY \cdot X^T$.
+- **Revision needed:** Replace all weight matrix gradient equations with the correct transpose combinations.
+    - $\frac{\delta L_{\text{BCE}}}{\delta W_h} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} O_{\text{Cc}(t)}^T \right)$
+    - $\frac{\delta L_{\text{BCE}}}{\delta U_h} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} (r_t \odot h_{t-1})^T \right)$
+    - $\frac{\delta L_{\text{BCE}}}{\delta W_z} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} O_{\text{Cc}(t)}^T \right)$
+    - $\frac{\delta L_{\text{BCE}}}{\delta U_z} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} h_{t-1}^T \right)$
+    - $\frac{\delta L_{\text{BCE}}}{\delta W_r} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} O_{\text{Cc}(t)}^T \right)$
+    - $\frac{\delta L_{\text{BCE}}}{\delta U_r} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} h_{t-1}^T \right)$
+    - **Add Note to this section:** `Note: O_Cc(t) and h_{t-1} are treated as column vectors (shape 2x1) for the matrix multiplications. The transpose operation results in an outer product, producing the 2x2 weight gradient matrices.`
 
-Note:
+**4. Propagating back to Front-End from GRU**
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}}$ (shape 6x$d_{ff}$) is the gradient passed back to the activated hidden layer of the FFN.
-2. $W_2^T$ is the transposed weight matrix of shape 2x$d_{ff}$.
+- **Where in text:** $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}(t)}} = ...$
+- **Current text:** $\dots = \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} W_h \right) + \dots$
+- **The Issue:** Same matrix calculus rule. If $Y = WX$, then $dX = W^T dY$.
+- **Revision needed:**
+    - **Change equation to:**
+      $$ \frac{\delta L*{\text{BCE}}}{\delta O*{\text{Cc}(t)}} = \left( W*h^T \frac{\delta L*{\text{BCE}}}{\delta z*{\tilde{h}(t)}} \right) + \left( W_z^T \frac{\delta L*{\text{BCE}}}{\delta z*{z(t)}} \right) + \left( W_r^T \frac{\delta L*{\text{BCE}}}{\delta z\_{r(t)}} \right) $$
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} = \frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}} \odot \frac{\delta A_{\text{FFN}}}{\delta H_{\text{FFN}}} \\
-= \frac{\delta L_{\text{BCE}}}{\delta A_{\text{FFN}}} \odot \mathbb{I}_{\mathbb{Z}^+}(H_{\text{FFN}})
-$$
+---
 
-Note:
+### PART 3: CNN with Self-Attention Back-End Validations & Revisions
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}}$ (shape 6x$d_{ff}$) is the gradient of the pre-activation hidden layer.
-2. $\mathbb{I}_{\mathbb{Z}^+}(\cdot)$ is the indicator function for the derivative of ReLU, evaluating to 1 where $H_{\text{FFN}} > 0$ and 0 otherwise.
+There is a systematic error in the matrix calculus sequence throughout this subchapter. If $Y = X W$, the gradients are $\frac{\partial L}{\partial X} = \frac{\partial L}{\partial Y} W^T$ and $\frac{\partial L}{\partial W} = X^T \frac{\partial L}{\partial Y}$. Almost all of your Attention backprop equations got the multiplication order backwards. Furthermore, the Softmax derivative lacks the required sum rule for the sequence length.
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta W_1} = \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \times \frac{\delta H_{\text{FFN}}}{\delta W_1} \\
-= O_{\text{MHA}}^T \times \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}}
-$$
+**1. FFN Layer Gradients**
 
-Note:
+- **Where in text:** $\frac{\delta L_{\text{BCE}}}{\delta W_2}$, $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}}$, $\frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}}$, $\frac{\delta L_{\text{BCE}}}{\delta W_1}$
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta W_2} = \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} \right]^T O_{\text{FFN}(1)}$. (This results in a 2x6 \* 6x2 = 2x2 matrix, but it yields $dW^T$, not $dW$).
+- **Revision needed:** Swap the order and the transpose.
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta W_2} = O_{\text{FFN}(1)}^T \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}}$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} W_2^T$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} \odot \mathbb{I}_{\mathbb{Z}^+}(z_{\text{FFN}(1)})$ (Note: Use Hadamard product $\odot$ for activation function derivatives, not matrix multiplication).
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta W_1} = O_{\text{MHA}}^T \frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}}$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} W_1^T \right)$
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta W_1}$ (shape 2x$d_{ff}$) is the gradient for the first linear transformation weight matrix.
+**2. Multi-Head Attention Output Gradients**
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta b_1} = \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \times \frac{\delta H_{\text{FFN}}}{\delta b_1} \right) \\
-= \sum_{\text{rows}} \left( \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \right)
-$$
+- **Where in text:** $\frac{\delta L_{\text{BCE}}}{\delta W^O}$, $\frac{\delta L_{\text{BCE}}}{\delta C_h}$
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta W^O} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times C_h$
+- **Revision needed:**
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta W^O} = C_h^T \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}}$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta C_h} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} (W^O)^T$
 
-Note:
+**3. Attention Weights (Value, Key, Query) Gradients**
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta b_1}$ (shape 1x$d_{ff}$) is the gradient for the first bias vector.
+- **Where in text:** $\frac{\delta L_{\text{BCE}}}{\delta V_i}$, $\frac{\delta L_{\text{BCE}}}{\delta s_{\text{Attn}(i)}}$, $\frac{\delta L_{\text{BCE}}}{\delta K_i}$, $\frac{\delta L_{\text{BCE}}}{\delta Q_i}$
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta V_i} = \frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}} s_{\text{Attn}(i)}$
+- **The Issue:** $dC$ is 6x1. $s$ is 6x6. Matrix multiplication rules require $s^T dC$.
+- **Revision needed:**
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta V_i} = s_{\text{Attn}}^T \frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}}$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta s_{\text{Attn}(i)}} = \frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}} V_i^T$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta K_i} = \frac{1}{\sqrt{d_k}} \left( \left[ \frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} \right]^T Q_i \right)$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta Q_i} = \frac{1}{\sqrt{d_k}} \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} K_i \right)$
 
-_(Transitioning to the Multi-Head Attention Block)_
+**4. The Softmax Derivative (CRITICAL FIX)**
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} = \left(\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} \times \frac{\delta O_{\text{Attn}}}{\delta O_{\text{MHA}}}\right)_{\text{residual}} + \left(\frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} \times \frac{\delta H_{\text{FFN}}}{\delta O_{\text{MHA}}}\right)_{\text{FFN}} \\
-= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Attn}}} + \left( \frac{\delta L_{\text{BCE}}}{\delta H_{\text{FFN}}} W_1^T \right)
-$$
+- **Where in text:** $\frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}}$
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i,m)}} = \frac{\delta L_{\text{BCE}}}{\delta s_{\text{Attn}(i,m)}} s_{\text{Attn}(i,m)} \left(\delta_{mn} - s_{\text{Attn}(i,n)} \right)$
+- **The Issue:** Softmax is applied across the row (sequence length of 6). An element in $z$ affects _every_ element in its corresponding row in $s$. Therefore, calculating the gradient for one element of $z$ requires summing over all elements in that row of $s$. Your equation lacks the summation ($\sum$).
+- **Revision needed:**
+    - **Change the entire equation block to:**
+      $$ \frac{\delta L*{\text{BCE}}}{\delta z*{\text{Attn}(i, m, k)}} = \sum*{n=0}^{L-1} \left( \frac{\delta L*{\text{BCE}}}{\delta s*{\text{Attn}(i, m, n)}} s*{\text{Attn}(i, m, n)} (\delta*{nk} - s*{\text{Attn}(i, m, k)}) \right) $$
+    - **Change the Notes to:**
+        1. $m = \{0, 1, \dots, L-1\}$ is the row index (query sequence time-step).
+        2. $k = \{0, 1, \dots, L-1\}$ is the column index (key sequence time-step) for which the gradient is being calculated.
+        3. $n = \{0, 1, \dots, L-1\}$ is the summation iterator across the columns of the softmax output.
+        4. $L$ is the sequence length. In this case, it is 6.
+        5. $\delta_{nk}$ is the Kronecker delta function. The resulting derivative matrix has shape $L \times L$, which is 6x6.
 
-Note:
+**5. Query, Key, Value Input Weight Gradients**
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}}$ (shape 6x2) is the total gradient accumulating at the output of the MHA block.
-2. Because of the residual connection around the FFN ($O_{\text{Attn}} = O_{\text{MHA}} + \text{FFN}(O_{\text{MHA}})$), the chain rule demands that we sum the direct gradient bypassing the FFN and the gradient flowing _through_ the FFN.
+- **Where in text:** $\frac{\delta L_{\text{BCE}}}{\delta W_i^Q}, \frac{\delta L_{\text{BCE}}}{\delta W_i^K}, \frac{\delta L_{\text{BCE}}}{\delta W_i^V}$
+- **Current text:** $\frac{\delta L_{\text{BCE}}}{\delta W_i^Q} = \frac{\delta L_{\text{BCE}}}{\delta Q_i} O_{\text{Cc}}^T$
+- **The Issue:** $dQ_i$ is 6x1. $O_{\text{Cc}}^T$ is 2x6. 6x1 \* 2x6 gives a 6x6 matrix. But $W_i^Q$ is 2x1! The matrix multiplication order is reversed.
+- **Revision needed:**
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta W_i^Q} = O_{\text{Cc}}^T \frac{\delta L_{\text{BCE}}}{\delta Q_i}$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta W_i^K} = O_{\text{Cc}}^T \frac{\delta L_{\text{BCE}}}{\delta K_i}$
+    - **Change to:** $\frac{\delta L_{\text{BCE}}}{\delta W_i^V} = O_{\text{Cc}}^T \frac{\delta L_{\text{BCE}}}{\delta V_i}$
+    - **Add Note:** `Note: O_Cc transposed has shape 2x6. The gradients for Q, K, and V have shape 6x1. The resulting weight gradients all have the correct shape of 2x1.`
 
-Let $C_{\text{heads}} = \text{Concat}(\text{head}_1, \text{head}_2)$ be the 6x2 concatenated matrix from the two attention heads.
+**6. Propagating back to Front-End from Attention**
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta W^O} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times \frac{\delta O_{\text{MHA}}}{\delta W^O} \\
-= C_{\text{heads}}^T \times \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}}
-$$
+- **Where in text:** $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}} = \dots$
+- **Current text:** $\dots = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} + \sum_{i=1}^2 \left( \frac{\delta L_{\text{BCE}}}{\delta Q_i} (W_i^Q)^T + \frac{\delta L_{\text{BCE}}}{\delta K_i} (W_i^K)^T + \frac{\delta L_{\text{BCE}}}{\delta V_i} (W_i^V)^T \right)$
+- **Validation:** This equation is **100% correct**. $dQ_i$ is 6x1. $(W_i^Q)^T$ is 1x2. The resulting shape is 6x2. When summed up and added to $dO_{\text{MHA}}$ (6x2), the entire propagated gradient is 6x2. No changes needed here.
 
-Note:
+---
 
-1. $\frac{\delta L_{\text{BCE}}}{\delta W^O}$ (shape 2x2) is the gradient for the final output projection weight matrix of the MHA block.
+### Final Checklist for Paragraph Integrity
 
-$$
-\frac{\delta L_{\text{BCE}}}{\delta C_{\text{heads}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times \frac{\delta O_{\text{MHA}}}{\delta C_{\text{heads}}} \\
-= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} (W^O)^T
-$$
+When you make these changes, ensure the following text/paragraph logic remains intact:
 
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta C_{\text{heads}}}$ (shape 6x2) is the gradient flowing back into the concatenated heads.
-2. This 6x2 matrix is split vertically into two 6x1 matrices: $\frac{\delta L_{\text{BCE}}}{\delta \text{head}_1}$ and $\frac{\delta L_{\text{BCE}}}{\delta \text{head}_2}$, which are routed to their respective attention head calculations.
-
-_(Inside each Attention Head $i$ where $i \in \{1, 2\}$)_
-
-Let $S_i = \frac{Q_i K_i^T}{\sqrt{d_k}}$ be the 6x6 scaled attention score matrix before softmax, and let $P_i = \text{softmax}(S_i)$ be the 6x6 attention probability matrix.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta V_i} = \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i} \times \frac{\delta \text{head}_i}{\delta V_i} \\
-= P_i^T \times \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i}
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta V_i}$ (shape 6x1) is the gradient for the Value matrix of head $i$.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta P_i} = \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i} \times \frac{\delta \text{head}_i}{\delta P_i} \\
-= \frac{\delta L_{\text{BCE}}}{\delta \text{head}_i} V_i^T
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta P_i}$ (shape 6x6) is the gradient for the Softmax probabilities. $V_i^T$ has shape 1x6.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta S_i} = \frac{\delta L_{\text{BCE}}}{\delta P_i} \times \frac{\delta P_i}{\delta S_i} \\
-= P_i \odot \left( \frac{\delta L_{\text{BCE}}}{\delta P_i} - \sum_{\text{cols}} \left( \frac{\delta L_{\text{BCE}}}{\delta P_i} \odot P_i \right) \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta S_i}$ (shape 6x6) is the gradient for the pre-softmax attention scores.
-2. Because softmax is applied row-wise, the Jacobian derivative requires us to subtract the sum of the elements across the columns (row sum) from the incoming gradient, element-wise multiplied by the softmax probabilities themselves.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta Q_i} = \frac{\delta L_{\text{BCE}}}{\delta S_i} \times \frac{\delta S_i}{\delta Q_i} \\
-= \frac{1}{\sqrt{d_k}} \left( \frac{\delta L_{\text{BCE}}}{\delta S_i} K_i \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta Q_i}$ (shape 6x1) is the gradient for the Query matrix of head $i$.
-2. $d_k = 1$ based on the network assumptions.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta K_i} = \frac{\delta L_{\text{BCE}}}{\delta S_i} \times \frac{\delta S_i}{\delta K_i} \\
-= \frac{1}{\sqrt{d_k}} \left( \left(\frac{\delta L_{\text{BCE}}}{\delta S_i}\right)^T Q_i \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta K_i}$ (shape 6x1) is the gradient for the Key matrix of head $i$. Note the transpose on the incoming score gradient matrix.
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta W_i^Q} = O_{\text{Cc}}^T \times \frac{\delta L_{\text{BCE}}}{\delta Q_i} \quad ; \quad \frac{\delta L_{\text{BCE}}}{\delta W_i^K} = O_{\text{Cc}}^T \times \frac{\delta L_{\text{BCE}}}{\delta K_i} \quad ; \quad \frac{\delta L_{\text{BCE}}}{\delta W_i^V} = O_{\text{Cc}}^T \times \frac{\delta L_{\text{BCE}}}{\delta V_i}
-$$
-
-Note:
-
-1. These are the gradients for the Query, Key, and Value linear projection weight matrices for head $i$. All have shape 2x1. $O_{\text{Cc}}^T$ has shape 2x6.
-
-_(Final Gradient passed to the CNN Front-End)_
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}} = \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \right)_{\text{residual}} + \sum_{i=1}^2 \left( \left[ \frac{\delta L_{\text{BCE}}}{\delta Q_i} \times \frac{\delta Q_i}{\delta O_{\text{Cc}}} \right] + \left[ \frac{\delta L_{\text{BCE}}}{\delta K_i} \times \frac{\delta K_i}{\delta O_{\text{Cc}}} \right] + \left[ \frac{\delta L_{\text{BCE}}}{\delta V_i} \times \frac{\delta V_i}{\delta O_{\text{Cc}}} \right] \right) \\
-= \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} + \sum_{i=1}^2 \left( \frac{\delta L_{\text{BCE}}}{\delta Q_i} (W_i^Q)^T + \frac{\delta L_{\text{BCE}}}{\delta K_i} (W_i^K)^T + \frac{\delta L_{\text{BCE}}}{\delta V_i} (W_i^V)^T \right)
-$$
-
-Note:
-
-1. $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}}}$ (shape 6x2) is the total accumulated gradient passed back to the Front-End concatenation layer.
-2. Because $O_{\text{Cc}}$ branches out into the residual connection, and into the $Q_i, K_i, V_i$ matrices for _both_ heads, the chain rule dictates that the total gradient is the sum of the gradients propagated backward from all 7 pathways (1 residual + 3 matrices $\times$ 2 heads).
+1. In the `CNN Back-End` backpropagation, the reshape function `Reshape(., (6, 2))` does not need a transpose because it's flattened natively from `6x2` to `12x1`. My correction for GRU specifically added a transpose because you explicitly stated GRU was transposed _before_ flattening. Leave the CNN Back-End reshape exactly as it is.
+2. Ensure you consistently define vector shapes in your head when writing matrix multiplications. If the dimension $d_{model}=2$ and sequence $L=6$, a forward pass is `(6x2) * (2x2) = (6x2)`. Backwards is `(2x6) * (6x2) = (2x2)`. The corrections provided above strictly enforce this.

@@ -1,6 +1,18 @@
-# Manualisation
+# Identifikasi Permasalahan
 
-The simplified network to be used for an example calculation is the CNN model, the CNN with GRU model, and the CNN with Self-Attention model. The flow of this algorithm as shown in Gambar X.1 consists of three main steps: preprocessing, spectrogram calculation, and modeling. Preprocessing has already been discussed in chapter 3.2.4. After calculating STFT, the spectrogram output is then normalised using z-score normalisation. Batching is will be used in implementation with a size of 32. This reflects past literature like Choi et al. (2016conv) and Pons et al. (2018) which uses the default batch size of 32 provided by TensorFlow. The simplified networks assumes no use of mini-batching and thus batch and layer normalisation. The exampled dataset for the modeling stage will consist of 5 rows of arbitrary data sampled from the subset which consists of 3 arbitrary labels: happy, sad, and tense. The example dataset is shown in Table X.X. Log-mel spectrogram amplitudes in each frequency bin were observed in preliminary data exploration to be around -80 and 10 (in dB). The example dataset will reflect this range.
+This experiment aims to automate the labeling of emotion and theme on music. Music files or digital audio files can be used as input for such systems. However, discussion in chapter 2.2.1 have shown that converting digital audio into a spectrogram is more beneficial for deep neural networks. In signal processing, digital audio consists of discrete values at each time-step based on the sample rate. Said discrete values take into account the amplitude, frequency, and the offset of the sinusoid. Time in digital audio is based on the sample rate or at what discrete fraction of a second the signal is recorded. For an MP3 file, the usual sample rate is 44100 Hz, which means that there are 44100 discrete values in a second. These values can be represented as an array where the indices of such an array is the time-step.
+
+Spectrograms are commonly used to represent digital audio in speech recognition and MER. In this case, the kind of spectrogram used is the log-mel spectrogram. Converting to a log-mel spectrogram requires calculating the STFT. STFT calculates DFT for short frames with length of some arbitrary fraction of the sample rate. STFT assumes that the signal does not or is not likely to repeat. DFT assumes the opposite, therefore it is not viable to be applied to digital audio. STFT takes the parameters: sample rate, frame length, hop length, and the number of mel bands. The output is a 2D matrix where each row represents the mel band and each column represents the time-frame. The data in each mel band at a time-frame is the magnitude in dB. The magnitudes are then scaled logarithmically.
+
+The data provided in the MTG-Jamendo dataset consists of metadata and digital audio. Digital audio files and metadata are downloaded separately. Table X.X shows the first five rows of song metadata. The dataset consists of 55.609 audio files which has been preprocessed by the authors as discussed in chapter 3.2.2. The dataset to be used in this experiment is the "mood/theme" subset which only has 18.486 files. There is no identifying information for each audio file such that training does not exhibit the artist and album effects (bogdanov 2019 mtg jamendo). The training, validation, and testing splits for this subset has been set up by the authors of the dataset. The approximate split is 60% for training and 20% for validation and testing respectively. The split is random but it is ensured that no track appears in more than one set and no tracks in any set are from the same artist present in other sets, all labels are present in all three splits, and each label in each split is represented by at least 40 files and 10 artist in the training split and 20 files and 5 artists in the validation and testing split respectively. During training, validation, and inference, the data is split to 15 second chunks for the entire song duration.
+
+Table X.X First five rows of song metadata (image in Google Docs)
+
+The three back-ends of the experiment is the variable aspect which affects the PR-AUC and ROC-AUC score. Comparison of different back-ends is designed to be fair in terms of the model's parameter count. The baseline of the three is the CNN back-end as proposed by Pons et al (2018). It consists of 3 layers of convolution with one max-pooling inserted between the 2nd and 3rd layer where each layer has 64 filters. The other two back-ends share the same number of layers but without the max-pooling layer in between. The parameters for other back-ends are set to be similar with a maximum standard deviance of 5% with the CNN back-end similar to the setup by Shim dan Sung (2022).
+
+# Perancangan Algoritme
+
+The flow of the algorithm as shown in Gambar X.1 consists of three main steps: preprocessing, spectrogram calculation, and modeling. Preprocessing has already been discussed in chapter 3.2.4. After calculating STFT, the spectrogram output is then normalised using z-score normalisation. Without batching, all 15-second splits of the audio for each training file will be used because each model can accept variable time lengths. However, since batching is used in the implementation, the last split of the training audio is discarded because batching requires same time length for all inputs in the batch. The batch size is 32. This reflects past literature like Choi et al. (2016conv) and Pons et al. (2018) which uses the default batch size of 32 provided by TensorFlow. The simplified networks assumes no use of mini-batching and thus batch and layer normalisation. The exampled dataset for the modeling stage will consist of 5 rows of arbitrary data sampled from the subset which consists of 3 arbitrary labels: happy, sad, and tense. The example dataset is shown in Table X.X. Log-mel spectrogram amplitudes in each frequency bin were observed in preliminary data exploration to be around -80 and 10 (in dB). The example dataset reflects this range.
 
 Gambar X.1 \<FLOWCHART 1\> (drawio:perancangan1)
 
@@ -192,11 +204,9 @@ The classifier consists of a FC layer which takes 12 nodes as its input. The bac
 
 Gambar X.X (drawio:classifier)
 
-<!-- # Log-Mel Spectrogram Calculation -->
+<!-- This is basically Manualisasi -->
 
-<!-- # Feed-forward -->
-
-# Perumusan Feed-Forward dan Backpropagation Model CNN
+# Perumusan Feed-Forward dan Backpropagation
 
 ---
 
@@ -217,7 +227,7 @@ Note:
 
 ---
 
-The model subject to have its backpropagation equations defined is only the CNN model, which consists of the CNN front-end, the CNN back-end, and the classifier. Given a prediction, the loss function is defined in Persamaan 2.24. To ease understanding, Gambar X.X visualises each variable that are part of the CNN model. In the mathematical definitions in CHAPTER X.Y.Z (\<THE TWO SUBCHAPTERS FOR FF AND BPROP BELOW\>), the multiplication sign is used to denote scalar multiplication. If it is not present, then it denotes matrix multiplication.
+The simplified network to be used for the full numerical calculation is the CNN model. The definitions of feed-forward and backpropagation for the CNN with GRU model and the CNN with Self-Attention model is still provided. The CNN model consists of the CNN front-end, the CNN back-end, and the classifier. The loss function is defined in Persamaan 2.24 based on the prediction values. To ease understanding, Gambar X.X visualises each variable that are part of the CNN model. In the mathematical definitions in CHAPTER X.Y.Z (\<THE TWO SUBCHAPTERS FOR FF AND BPROP BELOW\>), the multiplication sign is used to denote scalar multiplication. If it is not present, then it denotes matrix multiplication.
 
 ## Perumusan Feed-Forward
 
@@ -235,7 +245,7 @@ Note:
 2. $\sigma$ is the sigmoid activation function
 3. z_O is the output of the output layer before applying the activation function as visualised in Gambar X.X
 
-$$z_O=O_{\text{FC}} W_O + b_O$$
+$$z_O=O_{\text{FC}}^T W_O + b_O$$
 
 Note:
 
@@ -288,7 +298,7 @@ Note:
 
 1. $L=6$ because there are 6 time-steps in the data.
 2. Concat(.) concatenates column-wise.
-3. The output of the GRU layer is the hidden states at all $t$. Each is transposed (see Gambar X.X (drawio:cnn-gru-be)) then flatteneed. In this case, the output is 2x6, concatenated then transposed, then flattened to 12x1.
+3. The output of the GRU layer is the hidden states at all $t$. Each is transposed (see Gambar X.X (drawio:cnn-gru-be)) then flattened. In this case, the output is 6x2 then flattened to 12x1.
 
 $$h_t = z_t \odot h_{t-1} + (1 - z_t) \odot \tilde{h}_t$$
 
@@ -571,19 +581,19 @@ Gambar X.X (drawio:cnn-gru-be-bprop)
 Due to the differences of how the results from GRU is concatenated and flatted from the CNN back-end, the reshape process is defined as:
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \operatorname*{Reshape}\left( \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}} \right]^T, (2, 6) \right)
+\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \operatorname*{Reshape}\left(\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
 $$
 
 The parameters being derived are visualised in Gambar X.X. The last hidden state or h_t is affected by the hidden states before it. Therefore, the backpropagated gradient at a time-step is the sum of the all gradients after it or 0 if it is the last time-step. This creates a recursive sum when calculating the weights and biases of the recurrent network (Zhang 2023). The gradient recursion is defined as:
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta h_t} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} + \frac{\delta O_{\text{GRU}}}{\delta h_{t+1}}
+\frac{\delta L_{\text{BCE}}}{\delta h_t} = \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} \right]_t + \frac{\delta O_{\text{GRU}}}{\delta h_{t+1}}\frac{\delta h_{t+1}}{\delta h_t}
 $$
 
 Note:
 
 1. $t\in\set{1,2,3,4,5,6}$ because the length of the sequence is 6.
-2. As noted before, if $t+1 \notin t$, $h_t=0$. This condition becomes possible because the value for t is increasing.
+2. If $t=6$ (the last time-step), the gradient from the future $\frac{\delta L_{\text{BCE}}}{\delta h_{t+1}} = 0$. The backpropagation iterates backwards from $t=6$ to $t=1$.
 
 To ease defining gradients, the feed-forward equations is redefined to be:
 
@@ -593,7 +603,7 @@ z_t=\sigma(z_{z(t)}) \\
 r_t=\sigma(z_{r(t)})
 $$
 
-Note: All equations are defined in Persamaan X.X sampai dengan X.X (\<THE FEEDFORWARD GRU EQS ABOVE\>)
+Note: all equations are defined in Persamaan X.X sampai dengan X.X (\<THE FEEDFORWARD GRU EQS ABOVE\>)
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta \tilde{h}_t} = \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta \tilde{h}_t}
@@ -630,20 +640,20 @@ $$
 As noted before, the summation of each time-step is recursive. The base case is known to be 0 when the case is $t+1 \notin t$. The recursive case is defined as the summation of partial derivatives from all equations defined in Persamaan X.X sampai dengan X.X (\<THE FEEDFORWARD GRU EQS ABOVE\>) where $h_{t-1}$ occurs. It is defined to be:
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta h_{t+1}} = \left(\frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta h_{t+1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times \frac{\delta z_{\tilde{h}(t)}}{\delta h_{t+1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} \times \frac{\delta z_{z(t)}}{\delta h_{t+1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} \times \frac{\delta z_{r(t)}}{\delta h_{t+1}}\right) \\
-= \left( \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot z_t \right) + \left( \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} U_h \right) \odot r_t \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} U_z \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} U_r \right)
+\frac{\delta L_{\text{BCE}}}{\delta h_{t-1}} = \left(\frac{\delta L_{\text{BCE}}}{\delta h_t} \odot \frac{\delta h_t}{\delta h_{t+1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times \frac{\delta z_{\tilde{h}(t)}}{\delta h_{t+1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} \times \frac{\delta z_{z(t)}}{\delta h_{t+1}}\right) + \left(\frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} \times \frac{\delta z_{r(t)}}{\delta h_{t+1}}\right) \\
+= \left( \frac{\delta L_{\text{BCE}}}{\delta h_t} \odot z_t \right) + \left( \left( U_h^T \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}}  \right) \odot r_t \right) + \left( U_z^T \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}}  \right) + \left( U_r^T \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}}  \right)
 $$
 
 In the definitions at Persamaan X.X to X.X (\<FEEDFORWARD EQS ABOVE\>), the parameters that are shared across recurrent layers are: $W_h$, $U_h$, $b_h$, $W_z$, $U_z$, $b_z$, $W_r$, $U_r$, and $b_r$. The gradients for the parameters of the candidate hidden state is defined to be:
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta W_h} = \sum_{t=1}^6 \left(\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times \frac{\delta z_{\tilde{h}(t)}}{\delta W_h} \right)
-= \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times O_{\text{Cc}(t)}\right)
+= \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} O_{\text{Cc}(t)}^T\right)
 $$
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta U_h} = \sum_{t=1}^6 \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times \frac{\delta z_{\tilde{h}(t)}}{\delta U_h} \right)
-= \sum_{t=1}^6 \left(\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times r_t \odot h_{t-1} \right)
+= \sum_{t=1}^6 \left(\frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} (r_t \odot h_{t-1})^T \right)
 $$
 
 $$
@@ -654,11 +664,11 @@ $$
 Similarly, the gradients for the update and reset gate is respectively defined to be:
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta W_z} = \sum_{t=1}^6 \left(  \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} \times O_{\text{Cc}(t)} \right)
+\frac{\delta L_{\text{BCE}}}{\delta W_z} = \sum_{t=1}^6 \left(  \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} O_{\text{Cc}(t)}^T \right)
 $$
 
 $$
-\quad \frac{\delta L_{\text{BCE}}}{\delta U_z} = \sum_{t=1}^6 \left(\frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} \times h_{t-1} \right)
+\quad \frac{\delta L_{\text{BCE}}}{\delta U_z} = \sum_{t=1}^6 \left(\frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} h_{t-1}^T \right)
 $$
 
 $$
@@ -666,11 +676,11 @@ $$
 $$
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta W_r} = \sum_{t=1}^6 \left(  \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} \times O_{\text{Cc}(t)} \right)
+\frac{\delta L_{\text{BCE}}}{\delta W_r} = \sum_{t=1}^6 \left(  \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} O_{\text{Cc}(t)}^T \right)
 $$
 
 $$
-\quad \frac{\delta L_{\text{BCE}}}{\delta U_r} = \sum_{t=1}^6 \left(\frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} \times h_{t-1} \right)
+\quad \frac{\delta L_{\text{BCE}}}{\delta U_r} = \sum_{t=1}^6 \left(\frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} h_{t-1}^T \right)
 $$
 
 $$
@@ -681,12 +691,12 @@ Similarly, the parameter O_Cc(t) occurs multiple times as defined in Persamaan X
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta O_{\text{Cc}(t)}} = \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} \times \frac{\delta z_{\tilde{h}(t)}}{\delta O_{\text{Cc}(t)}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} \times \frac{\delta z_{z(t)}}{\delta O_{\text{Cc}(t)}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} \times \frac{\delta z_{r(t)}}{\delta O_{\text{Cc}(t)}} \right) \\
-= \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}} W_h \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}} W_z \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}} W_r \right)
+= \left( W_h^T \frac{\delta L_{\text{BCE}}}{\delta z_{\tilde{h}(t)}}  \right) + \left( W_z^T \frac{\delta L_{\text{BCE}}}{\delta z_{z(t)}}  \right) + \left( W_r^T \frac{\delta L_{\text{BCE}}}{\delta z_{r(t)}}  \right)
 $$
 
 Note: this operation is done for all $t \in \set{1,2,3,4,5,6}$. Notice that it is not summed unlike for the weights and biases of GRU.
 
-The result of Persamaan X.X (\<THE EQ DIRECTLY ABOVE THIS\>) is concatenated column-wise. In this case, it would result in a matrix of shape 2x6, the same shape with the feed-forward. This matrix is then transposed to be of shape 6x2 and then backpropagated to the front-end the same as is defined in Persamaan X.X (\<THE LAST EQ OF CNN BACKEND BACKPROP SUBCHAPTER WITH O_CV AND O_CH\>).
+The result of Persamaan X.X (\<THE EQ DIRECTLY ABOVE THIS\>) is concatenated column-wise. In this case, it would result in a matrix of shape 6x2, the same shape with the feed-forward. This matrix is then backpropagated to the front-end the same as is defined in Persamaan X.X (\<THE LAST EQ OF CNN BACKEND BACKPROP SUBCHAPTER WITH O_CV AND O_CH\>).
 
 ### CNN with Self-Attention Back-End
 
@@ -701,7 +711,7 @@ $$
 The flow of backpropagation is visualised in Gambar X.X (drawio:cnn-attn-be-bprop). The operations for each step of backpropagation is defined as follows:
 
 $$
-z_{\text{FFN}(1)}=O_{\text{MHA}}^TW_1+b_1
+z_{\text{FFN}(1)}=O_{\text{MHA}} W_1+b_1
 $$
 
 $$
@@ -711,8 +721,8 @@ $$
 <!-- w2, b2 -->
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta W_2} = \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} \right]^T \frac{\delta O_{\text{FFN}(2)}}{\delta W_2}
-=\left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} \right]^T O_{\text{FFN}(1)}
+\frac{\delta L_{\text{BCE}}}{\delta W_2} =\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} \times \frac{\delta O_{\text{FFN}(2)}}{\delta W_2}
+=O_{\text{FFN}(1)}^T \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}}
 $$
 
 $$
@@ -725,22 +735,22 @@ Note: $j=\set{0,1}$ because $d_{\text{model}} = 2$
 <!-- offn1 -->
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} = \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} \right]^T \frac{\delta O_{\text{FFN}(1)}}{\delta O_{\text{FFN}(1)}}
-=\left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} \right]^T W_2
+\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} \times \frac{\delta O_{\text{FFN}(1)}}{\delta O_{\text{FFN}(1)}}
+=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} W_2^T
 $$
 
 <!-- zffn1 -->
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} = \left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} \right]^T \frac{\delta O_{\text{FFN}(1)}}{\delta z_{\text{FFN}(1)}}
-=\left[\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} \right]^T \mathbb{I}_{\mathbb{Z}^+}(z_{\text{FFN}(1)})
+\frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} \times \frac{\delta O_{\text{FFN}(1)}}{\delta z_{\text{FFN}(1)}}
+=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(1)}} \odot \mathbb{I}_{\mathbb{Z}^+}(z_{\text{FFN}(1)})
 $$
 
 <!-- w1, b1 -->
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta W_1} = \left[\frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} \right]^T \frac{\delta z_{\text{FFN}(1)}}{\delta W_1}
-=\left[\frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} \right]^T O_{\text{MHA}^T}
+\frac{\delta L_{\text{BCE}}}{\delta W_1} = \frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} \times \frac{\delta z_{\text{FFN}(1)}}{\delta W_1}
+=O_{\text{MHA}}^T \frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}}
 $$
 
 $$
@@ -754,7 +764,7 @@ Note: $j=\set{0,1}$ because $d_{ff} = 2$
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} + \frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} \times \frac{\delta z_{\text{FFN}(1)}}{\delta O_{\text{MHA}}} \\
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} + \frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} \times W_1
+=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} + \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\text{FFN}(1)}} W_1^T \right)
 $$
 
 Note: first term is residual
@@ -767,12 +777,12 @@ $$
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta W^O} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times \frac{\delta O_{\text{MHA}}}{\delta W^O}
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times C_h
+=C_h^T \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}}
 $$
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta C_h} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times \frac{\delta O_{\text{MHA}}}{\delta C_h}
-=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} \times W^O
+=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{MHA}}} (W^O)^T
 $$
 
 <!-- definitions -->
@@ -795,14 +805,14 @@ Note: $i=\set{1,2}$ because there are 2 heads as discussed in the network assump
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta V_i} = \frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}} \times \left[\frac{\delta C_{h}}{\delta V} \right]_i
-=\frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}} s_{\text{Attn}(i)}
+=s_{\text{Attn}}^T \frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}}
 $$
 
 <!-- s_attn(i) -->
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta s_{\text{Attn}(i)}} = \frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}} \times \left[ \frac{\delta C_{h}}{\delta s_{\text{Attn}}} \right]_i
-=\frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}} V_i
+=\frac{\delta L_{\text{BCE}}}{\delta C_{h(i)}} V_i^T
 $$
 
 <!-- z_attn(i) -->
@@ -819,41 +829,42 @@ Note: $\delta_{mn}$ is the Kronecker delta function which is used in the derivat
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} = \frac{\delta L_{\text{BCE}}}{\delta s_{\text{Attn}(i)}} \times \left[ \frac{\delta s_{\text{Attn}}}{\delta z_{\text{Attn}}} \right]_i \\
-=\frac{\delta L_{\text{BCE}}}{\delta s_{\text{Attn}(i,m)}} s_{\text{Attn}(i,m)} \left(\delta_{mn} - s_{\text{Attn}(i,n)} \right)
+\frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i, m, n)}}=\sum_{k=0}^{L-1} \left( \frac{\delta L_{\text{BCE}}}{\delta s_{\text{Attn}(i, m, k)}} s_{\text{Attn}(i, m, k)} (\delta_{np} - s_{\text{Attn}(i, m, n)}) \right)
 $$
 
 Note:
 
-1. $m=\set{0,1,\dots,L-1}$
-2. $n=\set{0,1,\dots,L-1}$
-3. L is the input sequence length (time axis). In this case, it is 6.
-4. The equation is evaluated for all $m$ and for all $n$. The resulting shape of the derivative is LxL, in this case it is 6x6.
+1. $m=\set{0,1,\dots,L-1}$ is the row index (query sequence time-step).
+1. $n=\set{0,1,\dots,L-1}$ is the column index (key sequence time-step) for which the gradient is being calculated.
+1. $k=\set{0,1,\dots,L-1}$ is the summation iterator across the columns of the softmax output.
+1. L is the input sequence length (time axis). In this case, it is 6.
+1. The equation is evaluated for all $m$ and for all $n$. The resulting shape of the derivative is LxL, in this case it is 6x6.
 
 <!-- k_i, q_i -->
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta K_i} = \frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} \times \left[ \frac{\delta z_{\text{Attn}}}{\delta K} \right]_i
-=\frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} \frac{1}{\sqrt{d_k}} Q_i
+=\frac{1}{\sqrt{d_k}} \left( \left[ \frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} \right]^T Q_i \right)
 $$
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta Q_i} = \frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} \times \left[ \frac{\delta z_{\text{Attn}}}{\delta Q} \right]_i
-=\frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} \frac{1}{\sqrt{d_k}} K_i
+=\frac{1}{\sqrt{d_k}} \left( \frac{\delta L_{\text{BCE}}}{\delta z_{\text{Attn}(i)}} K_i \right)
 $$
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta W_i^Q} = \frac{\delta L_{\text{BCE}}}{\delta Q_i} \times \left[ \frac{\delta Q}{\delta W^Q} \right]_i
-= \frac{\delta L_{\text{BCE}}}{\delta Q_i} O_{\text{Cc}}^T
+=O_{\text{Cc}}^T \frac{\delta L_{\text{BCE}}}{\delta Q_i}
 $$
 
 In a similar manner:
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta W_i^K} = \frac{\delta L_{\text{BCE}}}{\delta K_i} O_{\text{Cc}}^T
+\frac{\delta L_{\text{BCE}}}{\delta W_i^K} = O_{\text{Cc}}^T \frac{\delta L_{\text{BCE}}}{\delta K_i}
 $$
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta W_i^V} = \frac{\delta L_{\text{BCE}}}{\delta V_i} O_{\text{Cc}}^T
+\frac{\delta L_{\text{BCE}}}{\delta W_i^V} = O_{\text{Cc}}^T \frac{\delta L_{\text{BCE}}}{\delta V_i}
 $$
 
 Note: these are the gradients for the Query, Key, and Value linear projection weight matrices for head $i$. All have shape 2x1. $O_{\text{Cc}}^T$ has shape 2x6.
