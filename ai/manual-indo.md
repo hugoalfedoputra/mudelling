@@ -231,9 +231,9 @@ Jaringan contoh yang digunakan untuk perhitungan numerik penuh adalah model CNN.
 
 ## Perumusan Feed-Forward
 
-GAMBAR X.X \<VIS CNN TAPI ADA VARIABLE VARIABLE\> (drawio:cnn-ff-bprop)
-
 ### Pengklasifikasi
+
+GAMBAR X.X \<VIS CNN TAPI ADA VARIABLE VARIABLE\> (drawio:cnn-ff-bprop)
 
 Persamaan feed-forward digambarkan pada Gambar X.X. Alur feed-forward sengaja didefinisikan mulai dari fungsi rugi BCE berbobot ke arah masukan.
 
@@ -270,7 +270,7 @@ Berikut ini menggunakan kembali (re-purposes) definisi matematis dari operasi ko
 
 $$
 z_{\text{c}}=S_{\text{c}}(i_{\text{c}},j_{\text{c}}) + b_{c} \\
-=\sum_{m_{\text{c}}=0}^{M_{\text{c}}-1}\sum_{n_{\text{c}}=0}^{N_{\text{c}}-1} \big(O_{\text{Cc}}(i_{\text{c}}+m_{\text{c}},j_{\text{c}}+n_{\text{c}})\times K_{\text{c}}(m_{\text{c}},n_{\text{c}}) \big) + b_{c}
+=\sum_{m_{\text{c}}=0}^{M_{\text{c}}-1}\sum_{n_{\text{c}}=0}^{N_{\text{c}}-1} \left(O_{\text{Cc}}(i_{\text{c}}+m_{\text{c}},j_{\text{c}}+n_{\text{c}})\times K_{\text{c}}(m_{\text{c}},n_{\text{c}}) \right) + b_{c}
 $$
 
 Keterangan: serupa dengan Persamaan 2.X; nilai $I$ yang didefinisikan pada Persamaan 2.X diganti dengan O_Cc yang merupakan keluaran dari lapisan konvolusi pertama di back-end.
@@ -328,8 +328,6 @@ Keterangan:
 
 ### CNN dengan Self-Attention Back-End
 
-Operasi ini menggunakan kembali (repurpose) definisi matematis dari Transformer encoder yang diusulkan oleh Vaswani et al. (2017):
-
 $$O_{\text{FC}} = \text{Flatten}(O_{\text{Attn}})$$
 
 Keterangan: $O_{\text{Attn}}$ adalah matriks keluaran 6x2 akhir dari back-end Self-Attention.
@@ -376,17 +374,17 @@ Keterangan:
 
 ### Filter Vertikal CNN Front-End
 
-Keterangan:
+<!-- Keterangan:
 
 1. Concat(.) adalah operasi penggabungan yang melakukan penggabungan berdasarkan kolom (menjaga panjang baris tetap sama)
 2. O_CV adalah keluaran dari lapisan konvolusi vertikal (dinotasikan CV) di front-end
-3. O_CH adalah keluaran dari lapisan konvolusi horizontal (dinotasikan CH) di front-end
+3. O_CH adalah keluaran dari lapisan konvolusi horizontal (dinotasikan CH) di front-end -->
 
 $$O_{\text{CV}} = \text{MaxPool}(\text{ReLU}(z_{\text{V}}))$$
 
 $$
 z_{\text{V}}=S_{\text{V}}(i_{\text{V}},j_{\text{V}}) + b_{\text{V}} \\
-=\sum_{m_{\text{V}}=0}^{M_{\text{V}}-1}\sum_{n_{\text{V}}=0}^{N_{\text{V}}-1} \big(I(i_{\text{V}}+m_{\text{V}},j_{\text{V}}+n_{\text{V}})\times K_{\text{V}}(m_{\text{V}},n_{\text{V}}) \big) + b_{\text{V}}
+=\sum_{m_{\text{V}}=0}^{M_{\text{V}}-1}\sum_{n_{\text{V}}=0}^{N_{\text{V}}-1} \left(I(i_{\text{V}}+m_{\text{V}},j_{\text{V}}+n_{\text{V}})\times K_{\text{V}}(m_{\text{V}},n_{\text{V}}) \right) + b_{\text{V}}
 $$
 
 Keterangan:
@@ -401,7 +399,7 @@ $$O_{\text{CH}}=\text{ReLU}(z_H)$$
 
 $$
 z_{\text{H}}=S_{\text{H}}(i_{\text{H}},j_{\text{H}}) + b_{\text{H}} \\
-=\sum_{m_{\text{H}}=0}^{M_{\text{H}}-1}\sum_{n_{\text{H}}=0}^{N_{\text{H}}-1} \big(\text{MeanPool}(I)(i_{\text{H}}+m_{\text{H}},j_{\text{H}}+n_{\text{H}})\times K_{\text{H}}(m_{\text{H}},n_{\text{H}}) \big) + b_{\text{H}}
+=\sum_{m_{\text{H}}=0}^{M_{\text{H}}-1}\sum_{n_{\text{H}}=0}^{N_{\text{H}}-1} \left(\text{MeanPool}(I)(i_{\text{H}}+m_{\text{H}},j_{\text{H}}+n_{\text{H}})\times K_{\text{H}}(m_{\text{H}},n_{\text{H}}) \right) + b_{\text{H}}
 $$
 
 Keterangan:
@@ -432,7 +430,7 @@ Keterangan:
 $$
 \frac{\delta L_{\text{BCE}}}{\delta z_O}=\frac{\delta L_{\text{BCE}}}{\delta y_n} \times \frac{\delta y_n}{\delta z_O} \\
 =\frac{\delta L_{\text{BCE}}}{\delta y_n}\times \sigma(z_O) \times (1-\sigma(z_O)) \\
-=-\frac{1}{3} \times \left(P_w \times \frac{t_n}{y_n} - N_w \times \frac{1-t_n}{1-y_n} \right) \times \big(y_n \times (1-y_n) \big) \\
+=-\frac{1}{3} \times \left(P_w \times \frac{t_n}{y_n} - N_w \times \frac{1-t_n}{1-y_n} \right) \times \left(y_n \times (1-y_n) \right) \\
 =-\frac{1}{3} \times \left(P_w \times t_n \times (1-y_n) - N_w \times (1-t_n) \times y_n \right)
 $$
 
