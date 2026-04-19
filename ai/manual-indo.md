@@ -576,11 +576,11 @@ Keterangan:
 
 Gambar X.X (drawio:cnn-gru-be-bprop)
 
-Dikarenakan perbedaan cara hasil dari GRU digabungkan dan di-flatten dari CNN back-end, proses reshape didefinisikan sebagai:
-
 $$
 \frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \text{Reshape}\left(\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
 $$
+
+Keterangan: persamaan ini serupa dengan Persamaan X.X (\<RESHAPE IN PENGKLASIFIKASI BPROP\>)
 
 Parameter-parameter yang diturunkan digambarkan pada Gambar X.X. Hidden state terakhir atau h_t dipengaruhi oleh hidden state sebelumnya. Oleh karena itu, gradien yang di-backpropagate pada suatu time-step adalah jumlah dari semua gradien setelahnya atau 0 jika itu merupakan time-step terakhir. Hal ini menciptakan penjumlahan rekursif (recursive sum) saat menghitung weights dan bias dari recurrent jaringan (Zhang 2023). Recursion dari gradien tersebut didefinisikan sebagai:
 
@@ -700,7 +700,7 @@ Hasil dari Persamaan X.X (\<THE EQ DIRECTLY ABOVE THIS\>) digabungkan berdasarka
 
 Gambar X.X (drawio:cnn-gru-be-bprop)
 
-Untuk kasus attention back-end, proses reshape didefinisikan sebagai:
+<!-- Untuk kasus attention back-end, proses reshape didefinisikan sebagai: -->
 
 $$
 \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} = \text{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
@@ -892,7 +892,7 @@ Keterangan:
 
 1. $i_{\text{MPCV}}=i_{\text{Cc}}$
 2. $j_{\text{MPCV}}=\set{0,1,2,3,4}$ karena lebar dari keluaran konvolusi filter vertikal adalah 5.
-3. j_MPCV adalah kolom ke-j dari keluaran konvolusi filter vertikal.
+3. $j_{\text{MPCV}}$ adalah kolom ke-j dari keluaran konvolusi filter vertikal.
 4. argmax(.) adalah fungsi yang mengembalikan indeks di mana nilainya berada pada titik maksimum dalam masukan yang diberikan. Dalam kasus ini, inputnya adalah vektor atau matriks.
 
 $$
@@ -953,3 +953,7 @@ $$
 Keterangan: ini serupa dengan Persamaan X.X (\<REFERRING TO THE CNN BACKEND BIAS BACKPROP ABOVE\>)
 
 # Penghitungan Rancangan Model
+
+Pengujian dilakukan pada tiga model yang telah dilatih. Ketiga model tersebut beragam dalam hal jenis back-end: CNN, CNN dengan GRU, dan CNN dengan Self-Attention. Kumpulan data pengujian (test set) resmi yang telah disediakan oleh pembuat dataset MTG-Jamendo digunakan untuk melakukan pengujian pada ketiga model secara independen (bogdanov 2019mtg). Nilai PR-AUC dan ROC-AUC makro adalah nilai rata-rata dari masing-masing perhitungan PR-AUC dan ROC-AUC biner. Karena jenis klasifikasi adalah multi-label, akan terdapat penghitungan nilai-nilai PR-AUC dan ROC-AUC sebanyak banyaknya label pada dataset, yaitu 56. Pada penghitungan numerik untuk jaringan contoh, terdapat 3 label.
+
+Tidak semua nilai-nilai PR-AUC dan ROC-AUC akan dibandingkan satu sama lain. Pada tiap model, nilai-nilai tersebut akan diurutkan dari yang tertinggi ke yang terendah. Nilai PR-AUC dan ROC-AUC memiliki rentang di antara 0 dan 1; semakin tinggi semakin baik. Analisis akan dipisah menjadi analisis nilai PR-AUC dan ROC-AUC. Tiap model akan memiliki satu label dengan nilai PR-AUC tertinggi; banyak nilai-nilai PR-AUC yang dibandingkan adalah tiga karena terdapat tiga model. Label dengan nilai terburuk digunakan juga untuk perbandingan. Metodologi ini mencerminkan penelitian oleh Kim et al. (2019comparison) dan Won et al. (2019toward) yang mengevaluasi model berdasarkan kinerjanya pada tiap label. Label-label pada kedua penelitian tersebut dipilih secara sengaja untuk analisis berdasarkan metrik evaluasi, rupa filter yang telah dipelajari, atau nilai matriks attention. Hal sama dilakukan untuk nilai ROC-AUC. Tabel X.X merincikan rupa perbandingan yang akan dilakukan. Selain itu, ketiga model akan dibandingkan dengan nilai PR-AUC dan ROC-AUC makro pula untuk menilai kinerja arsitektur secara umum.
