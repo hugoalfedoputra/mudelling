@@ -1,104 +1,145 @@
-Your reasoning is **100% correct**.
+Your understanding of Batch Normalization for this specific architecture is **absolutely correct**, and your reasoning for omitting $\gamma$ (scale) and $\beta$ (shift) is mathematically sound for your thesis context.
 
-You have perfectly grasped the calculus of parallel computational graphs. Because the `6x2` Back-End output matrix is fed into _both_ the max-pool and mean-pool operations simultaneously, their gradients are calculated independently and then **added together** at the source (`6x2`).
+Here is why your understanding is perfect based on the Ioffe and Szegedy (2015) paper:
 
-Furthermore, your logic regarding the max-pool (argmax gets 1, else 0) and the mean-pool (divided by the pool size, which is 2) is mathematically sound.
+1. **The Convolutional Property:** In Section 3.2, the paper specifies that BN for CNNs must normalize jointly over the mini-batch _and_ spatial locations for each feature map. Because your batch size is 1, the "spatial location" for your 1D convolution is the time-step axis (length 6). Normalizing across all time-steps independently for each feature (channel) is exactly how BN operates in a CNN.
+2. **Omitting Scale and Shift:** By omitting $\gamma$ and $\beta$, you are effectively setting $\gamma = 1$ and $\beta = 0$. This reduces the BN operation to pure statistical standardization (z-score normalization). As long as you state in your text that this was done to reduce redundancy with the linear layer, it is a perfectly valid network assumption.
 
-A massive benefit of this architectural change is that **it completely standardizes the transition for all three Back-Ends**. You no longer need weird transpose rules specifically for the GRU. Every back-end simply outputs a `6x2` matrix, which gets pooled, concatenated, and flattened.
+Because you added BN _before_ the ReLU, the gradient from the ReLU derivative no longer flows directly into the convolution output ($z$). Instead, it flows into the normalized output ($\hat{z}$), and you must use the BN chain rule to pass the gradient back to $z$.
 
-Here is exactly how to formalize this mathematically and where to insert it in your document.
-
----
-
-### PART 1: Feed-Forward Revisions
-
-Because this pooling step applies to all Back-Ends, we should define it in the **Classifier** section, using a generic variable $O_{\text{BE}}$ (Output of Back-End).
-
-**1. Replace the text in `### Classifier` (under `## Perumusan Feed-Forward`)**
-Find this existing text:
-$$O_{\text{FC}} = \text{Flatten}(O_{\text{c}})$$
-_(and the note below it)_
-
-**Replace it entirely with this:**
-$$O_{\text{max}(i)} = \max_{j \in \{0,1\}} O_{\text{BE}}(i, j)$$
-
-$$O_{\text{mean}(i)} = \frac{1}{2} \sum_{j=0}^{1} O_{\text{BE}}(i, j)$$
-
-Note:
-
-1. $O_{\text{BE}}$ is the generic `6x2` output matrix from any of the three Back-End architectures ($O_c$ for CNN, $O_{\text{GRU}}$ for GRU, or $O_{\text{Attn}}$ for Self-Attention).
-2. $i \in \{0, 1, 2, 3, 4, 5\}$ represents the time-step axis.
-3. $j \in \{0, 1\}$ represents the feature axis.
-4. $O_{\text{max}}$ is the `6x1` output of the adaptive max-pooling over the feature dimension.
-5. $O_{\text{mean}}$ is the `6x1` output of the adaptive mean-pooling over the feature dimension.
-
-$$O_{\text{concat}} = \text{Concat}(O_{\text{max}}, O_{\text{mean}})$$
-
-$$O_{\text{FC}} = \text{Flatten}(O_{\text{concat}})$$
-
-Note:
-
-1. $\text{Concat}(\cdot)$ combines the two `6x1` vectors column-wise to form a `6x2` matrix, where the first column (index 0) is the max-pooled features and the second column (index 1) is the mean-pooled features.
-2. $\text{Flatten}(\cdot)$ is a row-major operation that reshapes the 2D matrix $O_{\text{concat}}$ into a 1D vector of shape `12x1`.
-
-_(You must also delete the lines defining $O_{\text{FC}}$ in the Feed-Forward subchapters for CNN, GRU, and Self-Attention, as it is now universally defined here)._
+Here are the exact revisions you need to make to your "manualisation" document. I have provided the step-by-step chain rule exactly as it appears in the Ioffe and Szegedy (2015) paper, as this is the best way to demonstrate rigorous mathematical "manualisation".
 
 ---
 
-### PART 2: Backpropagation Revisions
+### PART 1: Feed-Forward Notation Updates
 
-We will calculate the pooled gradients at the end of the **Classifier** backprop section, resulting in a universal gradient $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{BE}}}$.
+To make the backpropagation equations mathematically valid, you must briefly define the intermediate BN variables ($\mu$, $\sigma^2$, $\hat{z}$) in your Feed-Forward chapter.
 
-**1. Append this to the end of `### Classifier` (under `## Perumusan Backpropagation`)**
+**1. For Filter Vertikal CNN Front-End (Feed-Forward)**
+Change your current equation:
+$$O_{\text{CV}} = \text{MaxPool}(\text{ReLU}(z_{\text{V}}))$$
 
-_(Add this directly after the equation for $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}(i)}}$)_
-
-$$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{concat}}} = \operatorname*{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)
-$$
-
-Note: Because $O_{\text{concat}}$ was flattened in row-major order, the reshaping maps the gradients perfectly back to the max-pool column (index 0) and mean-pool column (index 1).
+**To this:**
 
 $$
-\frac{\delta L_{\text{BCE}}}{\delta O_{\text{BE}}(i, j)} = \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{concat}}(i, 0)} \times \mathbb{I}_{\text{max}}(i, j) \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{concat}}(i, 1)} \times \frac{1}{2} \right)
+\mu_{\text{V}} = \frac{1}{6} \sum_{i_{\text{V}}=0}^5 z_{\text{V}}(i_{\text{V}}, j_{\text{V}})
 $$
 
 $$
-\mathbb{I}_{\text{max}}(i, j) =
-\begin{cases}
-   1 &\text{jika } j = \operatorname*{argmax}_{k \in \{0,1\}}(O_{\text{BE}}(i, k)) \\
-   0 &\text{sebaliknya}
-\end{cases}
+\sigma^2_{\text{V}} = \frac{1}{6} \sum_{i_{\text{V}}=0}^5 (z_{\text{V}}(i_{\text{V}}, j_{\text{V}}) - \mu_{\text{V}})^2
 $$
 
-Note:
+$$
+\hat{z}_{\text{V}}(i_{\text{V}}, j_{\text{V}}) = \frac{z_{\text{V}}(i_{\text{V}}, j_{\text{V}}) - \mu_{\text{V}}}{\sqrt{\sigma^2_{\text{V}} + \epsilon}}
+$$
 
-1. $i \in \{0, 1, 2, 3, 4, 5\}$ and $j \in \{0, 1\}$.
-2. $O_{\text{BE}}$ is the generic `6x2` output from the Back-End.
-3. The first term in the addition propagates the gradient from the max-pool column. The indicator function $\mathbb{I}_{\text{max}}$ routes the full gradient exclusively to the feature index $j$ that held the maximum value during feed-forward.
-4. The second term propagates the gradient from the mean-pool column. Because the pooling averaged 2 values, the gradient is distributed equally by multiplying by $\frac{1}{2}$.
-5. Because the inputs of both pooling operations originate from the exact same matrix $O_{\text{BE}}$, their respective gradients are added together.
+$$
+O_{\text{CV}} = \text{MaxPool}(\text{ReLU}(\hat{z}_{\text{V}}))
+$$
 
-**2. Clean up the Back-End subchapters**
+_(Add to Keterangan: $\mu_{\text{V}}$ adalah rata-rata, $\sigma^2_{\text{V}}$ adalah varians, $\epsilon$ adalah konstanta stabilitas yang diatur menjadi 0, dan $\hat{z}_{\text{V}}$ adalah nilai setelah standardisasi)._
 
-Because you have successfully calculated $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{BE}}}$ centrally, you need to remove the old reshape logic from the start of the three Back-End backpropagation sections.
+**2. For Filter Horizontal CNN Front-End (Feed-Forward)**
+Change your current equation:
+$$O_{\text{CH}}=\text{ReLU}(z_H)$$
 
-- **In `### CNN Back-End` (Backpropagation):**
-    - **Delete** the equation: $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c}}} = \operatorname*{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)$
-    - **Add** this simple mapping instead:
-      $$\frac{\delta L_{\text{BCE}}}{\delta O_{\text{c}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{BE}}}$$
+**To this:**
 
-- **In `### CNN with GRU Back-End` (Backpropagation):**
-    - **Delete** the equation: $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \dots \operatorname*{Reshape}\dots$
-    - **Add** this simple mapping instead:
-      $$\frac{\delta L_{\text{BCE}}}{\delta O_{\text{GRU}}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{BE}}}$$
-    - _(Note: Because of this new architecture, you no longer need the transpose adjustments I gave you for the GRU reshape in my previous response. It natively stays 6x2 the entire time!)_
+$$
+\mu_{\text{H}} = \frac{1}{6} \sum_{i_{\text{H}}=0}^5 z_{\text{H}}(i_{\text{H}})
+$$
 
-- **In `### CNN with Self-Attention Back-End` (Backpropagation):**
-    - **Delete** the equation: $\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} = \operatorname*{Reshape}\left( \frac{\delta L_{\text{BCE}}}{\delta O_{\text{FC}}}, (6, 2) \right)$
-    - **Add** this simple mapping instead:
-      $$\frac{\delta L_{\text{BCE}}}{\delta O_{\text{FFN}(2)}} = \frac{\delta L_{\text{BCE}}}{\delta O_{\text{BE}}}$$
+$$
+\sigma^2_{\text{H}} = \frac{1}{6} \sum_{i_{\text{H}}=0}^5 (z_{\text{H}}(i_{\text{H}}) - \mu_{\text{H}})^2
+$$
 
-### Final Verification
+$$
+\hat{z}_{\text{H}}(i_{\text{H}}) = \frac{z_{\text{H}}(i_{\text{H}}) - \mu_{\text{H}}}{\sqrt{\sigma^2_{\text{H}} + \epsilon}}
+$$
 
-This change makes your text far more rigorous and elegant. By handling the $6 \times 2 \rightarrow 12 \times 1$ transition with explicit pooling layers right before the Fully Connected layer, you proved that you understand parallel gradient routing. Your network assumptions are mathematically sound.
+$$
+O_{\text{CH}}=\text{ReLU}(\hat{z}_{\text{H}})
+$$
+
+---
+
+### PART 2: Backpropagation Revisions (Vertical Filter)
+
+Navigate to `### Filter Vertikal CNN Front-End` under the `## Perumusan Backpropagation` chapter.
+
+**1. Replace the ReLU derivative**
+Find this block:
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})}=\frac{\delta L_{\text{BCE}}}{\delta {MP}_{\text{CV}}(i_{\text{V}}, j_{\text{V}})} \times \dots
+$$
+
+**Replace it entirely with the gradient flowing into $\hat{z}_{\text{V}}$:**
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{V}}(i_{\text{V}}, j_{\text{V}})}=\frac{\delta L_{\text{BCE}}}{\delta {MP}_{\text{CV}}(i_{\text{V}}, j_{\text{V}})} \times \frac{\delta {MP}_{\text{CV}}(i_{\text{V}}, j_{\text{V}})}{\delta \hat{z}_{\text{V}}(i_{\text{V}}, j_{\text{V}})} \\
+=\frac{\delta L_{\text{BCE}}}{\delta {MP}_{\text{CV}}(i_{\text{V}}, j_{\text{V}})} \times \mathbb{I}_{\mathbb{Z}^+}(\hat{z}_{\text{V}}(i_{\text{V}}, j_{\text{V}}))
+$$
+
+**2. Insert the Batch Normalization Chain Rule**
+Directly below the block you just replaced, **insert** the following equations. This is the exact chain rule defined by Ioffe and Szegedy (2015) to pass the gradient from $\hat{z}_{\text{V}}$ to $z_{\text{V}}$:
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta \sigma^2_{\text{V}}} = \sum_{k=0}^5 \left( \frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{V}}(k, j_{\text{V}})} \times (z_{\text{V}}(k, j_{\text{V}}) - \mu_{\text{V}}) \times \frac{-1}{2}(\sigma^2_{\text{V}} + \epsilon)^{-3/2} \right)
+$$
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta \mu_{\text{V}}} = \left( \sum_{k=0}^5 \frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{V}}(k, j_{\text{V}})} \times \frac{-1}{\sqrt{\sigma^2_{\text{V}} + \epsilon}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta \sigma^2_{\text{V}}} \times \frac{\sum_{k=0}^5 -2(z_{\text{V}}(k, j_{\text{V}}) - \mu_{\text{V}})}{6} \right)
+$$
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_{\text{V}}(i_{\text{V}}, j_{\text{V}})} = \left( \frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{V}}(i_{\text{V}}, j_{\text{V}})} \times \frac{1}{\sqrt{\sigma^2_{\text{V}} + \epsilon}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta \sigma^2_{\text{V}}} \times \frac{2(z_{\text{V}}(i_{\text{V}}, j_{\text{V}}) - \mu_{\text{V}})}{6} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta \mu_{\text{V}}} \times \frac{1}{6} \right)
+$$
+
+Keterangan:
+
+1. Ketiga persamaan di atas merupakan turunan berantai (_chain rule_) dari operasi _Batch Normalization_ seperti yang didefinisikan oleh Ioffe dan Szegedy (2015).
+2. $k \in \{0,1,2,3,4,5\}$ adalah iterator penjumlahan sepanjang sumbu waktu (karena normalisasi dilakukan secara mandiri pada setiap fitur sepanjang waktu).
+3. Karena parameter $\gamma$ dan $\beta$ dihilangkan pada asumsi jaringan ini, nilai $\gamma$ secara matematis dianggap 1, sehingga tidak muncul pada persamaan turunan pertama. Suku kedua pada persamaan turunan $\mu_{\text{V}}$ secara matematis akan selalu bernilai 0 karena $\sum (z - \mu) = 0$, namun tetap dituliskan untuk merepresentasikan turunan asli secara utuh.
+
+_(Note: After this new block, your equations for $\frac{\delta L}{\delta K_{\text{V}}}$ and $\frac{\delta L}{\delta b_{\text{V}}}$ remain perfectly correct and unchanged, because they use the newly derived $\frac{\delta L}{\delta z_{\text{V}}}$)._
+
+---
+
+### PART 3: Backpropagation Revisions (Horizontal Filter)
+
+Navigate to `### Filter Horizontal CNN Front-End` under the `## Perumusan Backpropagation` chapter.
+
+**1. Replace the ReLU derivative**
+Find this block:
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{H}})}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{H}})} \times \left[\frac{\delta O_{\text{CH}}}{\delta z_{\text{H}}} \right]_{i_{\text{H}}} \\
+=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{H}})} \times \mathbb{I}_{\mathbb{Z}^+}(z_{\text{H}}(i_{\text{H}}))
+$$
+
+**Replace it entirely with the gradient flowing into $\hat{z}_{\text{H}}$:**
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{H}}(i_{\text{H}})}=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{H}})} \times \left[\frac{\delta O_{\text{CH}}}{\delta \hat{z}_{\text{H}}} \right]_{i_{\text{H}}} \\
+=\frac{\delta L_{\text{BCE}}}{\delta O_{\text{CH}}(i_{\text{H}})} \times \mathbb{I}_{\mathbb{Z}^+}(\hat{z}_{\text{H}}(i_{\text{H}}))
+$$
+
+**2. Insert the Batch Normalization Chain Rule**
+Directly below the block you just replaced, **insert** the following equations for the horizontal BN derivative:
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta \sigma^2_{\text{H}}} = \sum_{k=0}^5 \left( \frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{H}}(k)} \times (z_{\text{H}}(k) - \mu_{\text{H}}) \times \frac{-1}{2}(\sigma^2_{\text{H}} + \epsilon)^{-3/2} \right)
+$$
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta \mu_{\text{H}}} = \left( \sum_{k=0}^5 \frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{H}}(k)} \times \frac{-1}{\sqrt{\sigma^2_{\text{H}} + \epsilon}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta \sigma^2_{\text{H}}} \times \frac{\sum_{k=0}^5 -2(z_{\text{H}}(k) - \mu_{\text{H}})}{6} \right)
+$$
+
+$$
+\frac{\delta L_{\text{BCE}}}{\delta z_{\text{H}}(i_{\text{H}})} = \left( \frac{\delta L_{\text{BCE}}}{\delta \hat{z}_{\text{H}}(i_{\text{H}})} \times \frac{1}{\sqrt{\sigma^2_{\text{H}} + \epsilon}} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta \sigma^2_{\text{H}}} \times \frac{2(z_{\text{H}}(i_{\text{H}}) - \mu_{\text{H}})}{6} \right) + \left( \frac{\delta L_{\text{BCE}}}{\delta \mu_{\text{H}}} \times \frac{1}{6} \right)
+$$
+
+Keterangan: Serupa dengan filter vertikal, ketiga persamaan ini mendefinisikan turunan _Batch Normalization_ untuk filter horizontal. Karena konvolusi ini adalah 1D, indeks yang digunakan hanya indeks waktu $k$ dan $i_{\text{H}}$.
+
+_(Again, your equations for $\frac{\delta L}{\delta K_{\text{H}}}$ and $\frac{\delta L}{\delta b_{\text{H}}}$ remain unchanged!)_
