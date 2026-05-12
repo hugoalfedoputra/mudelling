@@ -1,0 +1,13 @@
+This file also serves as a test upload file
+
+This is to write to DB
+curl -X POST http://localhost:3333/logs -H "x-api-key: blabla" -H "Content-Type: application/json" -d '{"key": "epoch_1_loss", "value": "0.67", "comment": "Training stable"}'
+
+This is to upload file (max size 10 MB)
+curl -X POST http://localhost:3333/upload -H "x-api-key: blabla" -F "file=@/absolute/path/to/skripsi-code/server/endpoints.txt"
+
+This is to list all of DB
+curl -X GET http://localhost:3333/logs/all -H "x-api-key: blabla"
+
+This is to list file names
+curl -X GET http://localhost:3333/files -H "x-api-key: blabla"

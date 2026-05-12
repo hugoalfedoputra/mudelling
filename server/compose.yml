@@ -1,0 +1,27 @@
+---
+
+services:
+  fyp-server:
+    build: .
+    container_name: fyp-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./file_uploads:/app/file_uploads
+    networks:
+      - proxy
+    ports:
+      - 3333:3333 # Remove ports if in production
+    # labels:
+    #   - "traefik.enable=true"
+    #   - "traefik.http.routers.fypserver.rule=Host(`fyp-stat.mysite.com`)"
+    #   - "traefik.http.routers.fypserver.entrypoints=websecure"
+    #   - "traefik.http.routers.fypserver.tls.certresolver=myresolver"
+    # Add service port labels etc. later
+
+networks:
+  proxy:
+    name: proxy
+#     external: true

@@ -1,0 +1,7 @@
+*.db
+*.env
+.env
+data/
+file_uploads/
+dev_data/
+dev_file_uploads/
