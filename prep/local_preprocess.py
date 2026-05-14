@@ -246,10 +246,8 @@ def calc_melspec(subfolder, item_in_question, naive_interval=15):
 
     interval = SAMPLE_RATE * naive_interval
 
-    # Load file locally from temp folder
-    y, sr = librosa.load(
-        LOCAL_TEMP_FOLDER + "/" + subfolder + "/" + item_in_question, sr=SAMPLE_RATE
-    )
+    # Load file locally
+    y, sr = librosa.load(item_in_question, sr=SAMPLE_RATE)
 
     # rawmels = []
     melspecs: list[np.ndarray] = []
@@ -306,10 +304,10 @@ def calc_remote_dir(
     children = dir.json()["children"]
     # for child in tqdm(children):
     # for child in children:
-    for filename in os.listdir(config.storage_base_folder + subfolder):
+    for filename in os.listdir(os.path.join(config.storage_base_folder, subfolder)):
         print(">>>", subfolder, filename)
         item_in_question = filename
-        # path = child["path"]
+        path = os.path.join(config.storage_base_folder, subfolder, filename)
 
         if melspec_exists(subfolder, item_in_question) and not config.redo_calculation:
             print(
@@ -350,7 +348,7 @@ def calc_remote_dir(
             ) as f:
                 np.save(
                     f,
-                    calc_melspec(subfolder, item_in_question, naive_interval=5),
+                    calc_melspec(subfolder, path, naive_interval=5),
                 )
 
             with open(
@@ -359,7 +357,7 @@ def calc_remote_dir(
             ) as f:
                 np.save(
                     f,
-                    calc_melspec(subfolder, item_in_question, naive_interval=15),
+                    calc_melspec(subfolder, path, naive_interval=15),
                 )
 
             with open(
@@ -368,7 +366,7 @@ def calc_remote_dir(
             ) as f:
                 np.save(
                     f,
-                    calc_melspec(subfolder, item_in_question, naive_interval=30),
+                    calc_melspec(subfolder, path, naive_interval=30),
                 )
         except Exception:
             raise Exception(
