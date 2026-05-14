@@ -38,6 +38,8 @@ class PreprocessorConfig:
     melspec_remote: str
     melspec_storage: str
     storage_auth: HTTPBasicAuth
+    start_subfolder: int
+    end_subfolder: int
 
 
 def load_config() -> PreprocessorConfig:
@@ -64,6 +66,9 @@ def load_config() -> PreprocessorConfig:
             password=os.environ["REMOTE_PASSWORD"],
         )
 
+        start_subfolder = int(os.environ["START_SUBFOLDER"])
+        end_subfolder = int(os.environ["END_SUBFOLDER"])
+
     except KeyError as e:
         # args[0] tells which variable is missing
         raise Exception(f".env file is incomplete! Missing: {e.args[0]}") from e
@@ -77,6 +82,8 @@ def load_config() -> PreprocessorConfig:
             os.environ["REMOTE_MELSPEC_FOLDER"] != "",
             os.environ["REMOTE_USERNAME"] != "",
             os.environ["REMOTE_PASSWORD"] != "",
+            os.environ["START_SUBFOLDER"] != "",
+            os.environ["END_SUBFOLDER"] != "",
         ]
     ):
         raise Exception("One or more variables in the .env file is empty.")
@@ -89,6 +96,8 @@ def load_config() -> PreprocessorConfig:
         melspec_remote=melspec_remote,
         melspec_storage=melspec_storage,
         storage_auth=storage_auth,
+        start_subfolder=start_subfolder,
+        end_subfolder=end_subfolder,
     )
 
 
@@ -535,7 +544,12 @@ def main():
     test_connections(config, s)
 
     # preprocess_all(config, s)
-    preprocess_all_mp(config, start_subfolder=0, end_subfolder=4, num_processes=4)
+    preprocess_all_mp(
+        config,
+        start_subfolder=config.start_subfolder,
+        end_subfolder=config.end_subfolder,
+        num_processes=4,
+    )
 
 
 if __name__ == "__main__":

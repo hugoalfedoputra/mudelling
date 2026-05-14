@@ -1,3 +1,4 @@
 .env
 temp_old/
 temp/
+docker-compose.yml
