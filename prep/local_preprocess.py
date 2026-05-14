@@ -197,18 +197,18 @@ def copy_melspec_to_remote(config: PreprocessorConfig, subfolder):
     out_path = remote_melspec_path_builder(config, subfolder=subfolder)
     ignore_existing = not config.overwrite_remote_copy
 
-    # rclone.copy(
-    #     in_path=in_path,
-    #     out_path=out_path,
-    #     ignore_existing=ignore_existing,
-    #     show_progress=True,
-    # )
     rclone.copy(
         in_path=in_path,
         out_path=out_path,
         ignore_existing=ignore_existing,
-        show_progress=False,
+        show_progress=True,
     )
+    # rclone.copy(
+    #     in_path=in_path,
+    #     out_path=out_path,
+    #     ignore_existing=ignore_existing,
+    #     show_progress=False,
+    # )
 
 
 def sys_cleanup(subfolder):
