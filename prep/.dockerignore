@@ -13,3 +13,4 @@ temp_old
 *.csv
 *.ipynb
 kbbi_words.txt
+local_preprocess.py
