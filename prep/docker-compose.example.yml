@@ -2,7 +2,14 @@ services:
   melspec-worker:
     build: .
     container_name: melspec-mp-worker
-    shm_size: '4gb'
+    deploy:
+      resources:
+        limits:
+          cpus: 4
+          memory: 4G
+        reservations:
+          cpus: 3.5
+          memory: 2G
     env_file:
       - .env
     networks:
