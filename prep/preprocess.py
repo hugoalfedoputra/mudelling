@@ -1,17 +1,18 @@
 import requests
-import pandas as pd
 import numpy as np
 import os
 import librosa
 import sys
 import traceback
 import multiprocessing as mp
+from datetime import datetime
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
 from dataclasses import dataclass
 from requests.auth import HTTPBasicAuth
 from rclone_python import rclone
 
+# import pandas as pd
 # from tqdm import tqdm
 
 # Globals
@@ -307,7 +308,16 @@ def calc_remote_dir(
     len_children = len(children)
     # for child in tqdm(children):
     for i, child in enumerate(children):
-        print(">>>", subfolder, child["name"], "\t", i, "out of", len_children)
+        print(
+            ">>>",
+            datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
+            subfolder,
+            child["name"],
+            "\t",
+            i,
+            "out of",
+            len_children,
+        )
         item_in_question = child["name"]
         path = child["path"]
 
