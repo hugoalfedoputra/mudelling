@@ -292,16 +292,16 @@ def load_remote_dir(config: PreprocessorConfig, session: requests.Session, subfo
 def calc_remote_dir(
     config: PreprocessorConfig, session: requests.Session, dir, subfolder
 ):
-    if dir is None:
-        raise Exception("Input is empty.")
+    # if dir is None:
+    #     raise Exception("Input is empty.")
 
-    if len(dir.json()) <= 0:
-        raise Exception("Input length is zero.")
+    # if len(dir.json()) <= 0:
+    #     raise Exception("Input length is zero.")
 
     if subfolder is None:
         raise Exception("Subfolder is required.")
 
-    children = dir.json()["children"]
+    # children = dir.json()["children"]
     # for child in tqdm(children):
     # for child in children:
     for filename in os.listdir(os.path.join(config.storage_base_folder, subfolder)):
