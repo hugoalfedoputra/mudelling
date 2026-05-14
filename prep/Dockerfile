@@ -1,5 +1,8 @@
 FROM python:3.13-slim
 
+# Force Python stdout and stderr streams to be unbuffered so that there's logs in the docker container
+ENV PYTHONUNBUFFERED=1
+
 # Install system dependencies for librosa and rclone download
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
@@ -32,5 +35,5 @@ COPY preprocess.py .
 # Create the temp folder for use by the script
 RUN mkdir -p /app/temp
 
-# Run the script
-CMD ["python", "preprocess.py"]
+# Run the script (unbuffered logs)
+CMD ["python", "-u", "preprocess.py", "true"]

@@ -276,6 +276,8 @@ def load_remote_dir(config: PreprocessorConfig, session: requests.Session, subfo
     if subfolder is None:
         raise Exception("Subfolder is required")
 
+    return None
+
     # Loads dir where audio files are (can only be from remote)
     # res = session.get(config.storage_base_folder + subfolder)
 
@@ -289,9 +291,7 @@ def load_remote_dir(config: PreprocessorConfig, session: requests.Session, subfo
     #     )
 
 
-def calc_remote_dir(
-    config: PreprocessorConfig, session: requests.Session, dir, subfolder
-):
+def calc_remote_dir(config: PreprocessorConfig, session: requests.Session, subfolder):
     # if dir is None:
     #     raise Exception("Input is empty.")
 
@@ -304,8 +304,11 @@ def calc_remote_dir(
     # children = dir.json()["children"]
     # for child in tqdm(children):
     # for child in children:
-    for filename in os.listdir(os.path.join(config.storage_base_folder, subfolder)):
-        print(">>>", subfolder, filename)
+    len_children = len(os.listdir(os.path.join(config.storage_base_folder, subfolder)))
+    for i, filename in enumerate(
+        os.listdir(os.path.join(config.storage_base_folder, subfolder))
+    ):
+        print(">>>", subfolder, filename, "\t", i, "out of", len_children)
         item_in_question = filename
         path = os.path.join(config.storage_base_folder, subfolder, filename)
 
@@ -412,8 +415,8 @@ def preprocess_all(config: PreprocessorConfig, s: requests.Session):
         sys_prepare(subfolder)
 
         try:
-            dir = load_remote_dir(config, s, subfolder)
-            calc_remote_dir(config, s, dir, subfolder)
+            # dir = load_remote_dir(config, s, subfolder)
+            calc_remote_dir(config, s, subfolder)
         except Exception:
             traceback.print_exc()
             print("Error(s) occured during preprocessing.")
@@ -469,8 +472,8 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
         sys_prepare(subfolder)
 
         try:
-            dir = load_remote_dir(config, s, subfolder)
-            calc_remote_dir(config, s, dir, subfolder)
+            # dir = load_remote_dir(config, s, subfolder)
+            calc_remote_dir(config, s, subfolder)
         except Exception:
             traceback.print_exc()
             print(f"Error(s) occured during preprocessing of subfolder {subfolder}.")

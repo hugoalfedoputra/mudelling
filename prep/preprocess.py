@@ -304,9 +304,10 @@ def calc_remote_dir(
         raise Exception("Subfolder is required.")
 
     children = dir.json()["children"]
+    len_children = len(children)
     # for child in tqdm(children):
-    for child in children:
-        print(">>>", subfolder, child["name"])
+    for i, child in enumerate(children):
+        print(">>>", subfolder, child["name"], "\t", i, "out of", len_children)
         item_in_question = child["name"]
         path = child["path"]
 
