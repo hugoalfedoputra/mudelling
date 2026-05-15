@@ -43,9 +43,11 @@ RCLONE_ARGS = [
     "--low-level-retries",
     "10",
     "--contimeout",
-    "60s",
+    "120s",
     "--timeout",
     "300s",
+    "--retries-sleep",
+    "10s",
 ]
 
 # ====================================================================================================
@@ -55,6 +57,7 @@ RCLONE_ARGS = [
 class PreprocessorConfig:
     overwrite_remote_copy: bool
     redo_calculation: bool
+    storage_base_url: str
     storage_base_folder: str
     melspec_remote: str
     melspec_storage: str
@@ -113,7 +116,9 @@ def load_config() -> PreprocessorConfig:
     )
 
 
-def remote_melspec_path_builder(config: PreprocessorConfig, subfolder=None, tcon=False):
+def remote_melspec_subfolder_builder(
+    config: PreprocessorConfig, subfolder=None, tcon=False
+):
     if subfolder is None and tcon:
         return config.melspec_remote + ":" + config.melspec_storage
     elif subfolder is not None and not tcon:
@@ -257,7 +262,7 @@ def melspec_exists_remotely_uncorrupted(
 
 def copy_melspec_to_remote(config: PreprocessorConfig, subfolder):
     in_path = LOCAL_TEMP_FOLDER + "/" + MELSPEC_DIR_PREFIX + subfolder
-    out_path = remote_melspec_path_builder(config, subfolder=subfolder)
+    out_path = remote_melspec_subfolder_builder(config, subfolder=subfolder)
     ignore_existing = not config.overwrite_remote_copy
 
     # rclone.copy(
@@ -355,7 +360,7 @@ def load_remote_dir(config: PreprocessorConfig, subfolder):
 def calc_remote_dir(
     config: PreprocessorConfig, children: list[dict[str, int | str]], subfolder: str
 ):
-    if not children:
+    if len(children) == 0:
         raise Exception("Input length is zero.")
     if subfolder is None:
         raise Exception("Subfolder is required.")
@@ -449,12 +454,14 @@ def calc_remote_dir(
 
         except Exception:
             traceback.print_exc()
-            print(f"Error calculating melspec for {item_in_question}. Skipping...")
+            print(
+                f"Error calculating and saving melspec locally for {item_in_question}. Skipping..."
+            )
 
 
 def is_subfolder_complete(config: PreprocessorConfig, subfolder):
     if (
-        rclone.size(remote_melspec_path_builder(config, subfolder))["count"]
+        rclone.size(remote_melspec_subfolder_builder(config, subfolder))["count"]
         == int(
             rclone.size(
                 config.melspec_remote + ":" + config.melspec_storage + "/" + subfolder
@@ -523,10 +530,7 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
         try:
             children = load_remote_dir(config, subfolder)
             calc_remote_dir(config, children, subfolder)
-        except Exception:
-            traceback.print_exc()
-            print(f"Error(s) occured during preprocessing of subfolder {subfolder}.")
-        finally:
+
             copy_melspec_to_remote(config, subfolder)
 
             # Deletion window just in case of corruption in tail-end subfolders
@@ -535,6 +539,12 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
                 sys_cleanup(
                     MELSPEC_DIR_PREFIX + subfolders_chunk[i - N_DELETION_WINDOW]
                 )
+        except Exception:
+            traceback.print_exc()
+            print(f"Error(s) occured during preprocessing of subfolder {subfolder}.")
+        finally:
+            # Continue regardless of errors
+            continue
 
 
 def preprocess_all_mp(
