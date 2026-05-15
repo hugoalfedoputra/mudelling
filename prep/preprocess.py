@@ -513,6 +513,7 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
     for i, subfolder in enumerate(subfolders_chunk):
         try:
             if is_subfolder_complete(config, subfolder) and not config.redo_calculation:
+                # If subfolder is complete then error check it. Though this can only happen on the second run
                 children = load_remote_dir(config, subfolder)
 
                 if len(children) == 0:
@@ -543,6 +544,8 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
                         continue
 
                 continue
+            else:
+                print(f"Subfolder {subfolder} is incomplete at remote. Calculating...")
         except Exception as e:
             print(
                 f"Subfolder {subfolder} doesn't exist remotely. Calculating... Error ignored: {e.args}"
