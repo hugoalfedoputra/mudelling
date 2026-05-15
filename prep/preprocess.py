@@ -381,12 +381,6 @@ def calc_remote_dir(
             len_children,
         )
 
-        if melspec_exists_remotely_uncorrupted(config, subfolder, item_in_question):
-            print(
-                f"All melspecs for {item_in_question} already exist remotely. Skipping..."
-            )
-            continue
-
         if (
             melspec_exists_locally(subfolder, item_in_question)
             and not config.redo_calculation
@@ -519,6 +513,35 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
     for i, subfolder in enumerate(subfolders_chunk):
         try:
             if is_subfolder_complete(config, subfolder) and not config.redo_calculation:
+                children = load_remote_dir(config, subfolder)
+
+                if len(children) == 0:
+                    raise Exception("Input length is zero.")
+
+                len_children = len(children)
+
+                for i, child in enumerate(children):
+                    item_in_question = child["Name"]
+
+                    print(
+                        ">>>",
+                        datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
+                        subfolder,
+                        item_in_question,
+                        "\t",
+                        i + 1,
+                        "out of",
+                        len_children,
+                    )
+
+                    if melspec_exists_remotely_uncorrupted(
+                        config, subfolder, item_in_question
+                    ):
+                        print(
+                            f"All melspecs for {item_in_question} already exist remotely. Skipping..."
+                        )
+                        continue
+
                 continue
         except Exception as e:
             print(
