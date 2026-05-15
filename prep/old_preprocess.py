@@ -1,3 +1,4 @@
+import requests
 import numpy as np
 import os
 import librosa
@@ -5,18 +6,16 @@ import sys
 import traceback
 import multiprocessing as mp
 from datetime import datetime
+from urllib3.util import Retry
+from requests.adapters import HTTPAdapter
 from dataclasses import dataclass
+from requests.auth import HTTPBasicAuth
 from rclone_python import rclone
 
-# ====================================================================================================
+# import pandas as pd
+# from tqdm import tqdm
+
 # Globals
-#
-# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
-# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
-# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
-# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
-# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
-# ====================================================================================================
 # Implicit: n_fft = 2048, hop_length = 512
 SAMPLE_RATE = 16000
 N_MEL_BANDS = 96
@@ -36,28 +35,16 @@ MELSPEC_5S_PREFIX = "5_"
 MELSPEC_15S_PREFIX = "15_"
 MELSPEC_30S_PREFIX = "30_"
 
-# These are actually default as per: https://rclone.org/commands/rclone/
-RCLONE_ARGS = [
-    "--retries",
-    "10",
-    "--low-level-retries",
-    "10",
-    "--contimeout",
-    "60s",
-    "--timeout",
-    "300s",
-]
-
-# ====================================================================================================
-
 
 @dataclass
 class PreprocessorConfig:
     overwrite_remote_copy: bool
     redo_calculation: bool
+    storage_base_url: str
     storage_base_folder: str
     melspec_remote: str
     melspec_storage: str
+    storage_auth: HTTPBasicAuth
     start_subfolder: int
     end_subfolder: int
 
@@ -77,9 +64,14 @@ def load_config() -> PreprocessorConfig:
     try:
         # If the key is missing, raise KeyError
         storage_base_url = os.environ["REMOTE_BASE_URL"]
-        storage_base_folder = storage_base_url + ":" + os.environ["REMOTE_BASE_FOLDER"]
+        storage_base_folder = storage_base_url + os.environ["REMOTE_BASE_FOLDER"]
         melspec_remote = os.environ["RCLONE_REMOTE"]
         melspec_storage = os.environ["REMOTE_MELSPEC_FOLDER"]
+
+        storage_auth = HTTPBasicAuth(
+            username=os.environ["REMOTE_USERNAME"],
+            password=os.environ["REMOTE_PASSWORD"],
+        )
 
         start_subfolder = int(os.environ["START_SUBFOLDER"])
         end_subfolder = int(os.environ["END_SUBFOLDER"])
@@ -110,6 +102,7 @@ def load_config() -> PreprocessorConfig:
         storage_base_folder=storage_base_folder,
         melspec_remote=melspec_remote,
         melspec_storage=melspec_storage,
+        storage_auth=storage_auth,
         start_subfolder=start_subfolder,
         end_subfolder=end_subfolder,
     )
@@ -131,13 +124,29 @@ def remote_melspec_path_builder(config: PreprocessorConfig, subfolder=None, tcon
         raise Exception("Subfolder can not be empty.")
 
 
-def test_connections(config: PreprocessorConfig):
-    print("Testing rclone remote connection...")
-    if not rclone.check_remote_existing(config.melspec_remote):
+def test_connections(config: PreprocessorConfig, session: requests.Session):
+    # Test rclone
+    conns = [
+        rclone.check_remote_existing(config.melspec_remote),
+    ]
+    if not all(conns):
         raise Exception(
-            f"MELSPEC_REMOTE '{config.melspec_remote}' is incorrect, missing, or empty in rclone.conf."
+            conns,
+            "MELSPEC_REMOTE and/or MELSPEC_STORAGE is incorrect, missing, or empty.",
         )
-    print("Connection test passed.")
+
+    # Test remote storage
+    try:
+        res = session.get(config.storage_base_folder)
+
+        if res.status_code != 200:
+            raise Exception(
+                "Remote storage configuration incorrect. Got status code:",
+                res.status_code,
+                res.json(),
+            )
+    except Exception as e:
+        raise Exception(f"Connection failed with: {e.args}") from e
 
 
 def sys_prepare(subfolder):
@@ -174,11 +183,7 @@ def remote_melspec_path_builder(
     config: PreprocessorConfig, subfolder, item_in_question, melspec_chunk_length
 ):
     return (
-        config.melspec_remote
-        + ":"
-        + config.melspec_storage
-        + "/"
-        + MELSPEC_DIR_PREFIX
+        config.storage_base_folder
         + subfolder
         + "/"
         + melspec_chunk_length
@@ -214,46 +219,49 @@ def melspec_exists_locally(subfolder, item_in_question):
 
 
 def melspec_exists_remotely_uncorrupted(
-    config: PreprocessorConfig, subfolder, item_in_question
+    config: PreprocessorConfig, session: requests.Session, subfolder, item_in_question
 ):
     conns = []
     melspec_prefixes = [MELSPEC_5S_PREFIX, MELSPEC_15S_PREFIX, MELSPEC_30S_PREFIX]
     try:
         for i, mpref in enumerate(melspec_prefixes):
-            remote_npy_path = remote_melspec_path_builder(
-                config, subfolder, item_in_question, mpref
-            )
-            local_npy_path = local_melspec_path_builder(
-                subfolder, item_in_question, mpref
+            resp = session.get(
+                remote_melspec_path_builder(config, subfolder, item_in_question, mpref)
             )
 
-            try:
-                out_dir = f"{LOCAL_TEMP_FOLDER}/{MELSPEC_DIR_PREFIX}{subfolder}"
+            if resp.status_code == 200:
+                res = True
 
-                rclone.copy(
-                    in_path=remote_npy_path,
-                    out_path=out_dir,
-                    ignore_existing=False,
-                    args=RCLONE_ARGS,
+                npy_file_path = local_melspec_path_builder(
+                    subfolder, item_in_question, mpref
                 )
 
-                if not os.path.exists(local_npy_path):
-                    res = False
-                else:
-                    remote_res = np.load(local_npy_path)
+                try:
+                    f = open(
+                        npy_file_path,
+                        mode="wb",
+                    )
+                    f.write(resp.content)
+                    f.close()
+
+                    remote_res = np.load(npy_file_path)
                     if int(remote_res.shape[2]) != N_MELSPEC_LENGTHS[i]:
-                        res = False  # Corrupted
-                    else:
-                        res = True
-            except Exception:
-                res = False
-            finally:
-                conns.append(res)
+                        # File is corrupted, recalculate
+                        res = False
+                except Exception:
+                    res = False
+                    raise Exception(
+                        "Error when saving normalised .npy file from remote to local temp folder."
+                    )
+                finally:
+                    conns.append(res)
 
         return all(conns)
-    except Exception:
+    except:
         traceback.print_exc()
-        print("Error checking remote melspec corruption. Assuming corrupted/missing.")
+        print(
+            "Error when checking if melspec is not corrupted remotely. Skipping is simplest..."
+        )
         return False
 
 
@@ -273,7 +281,6 @@ def copy_melspec_to_remote(config: PreprocessorConfig, subfolder):
         out_path=out_path,
         ignore_existing=ignore_existing,
         show_progress=False,
-        args=RCLONE_ARGS,
     )
 
 
@@ -340,45 +347,55 @@ def calc_melspec(subfolder, item_in_question, naive_interval=15):
     return np.array(melspecs)
 
 
-def load_remote_dir(config: PreprocessorConfig, subfolder):
+def load_remote_dir(config: PreprocessorConfig, session: requests.Session, subfolder):
     if subfolder is None:
         raise Exception("Subfolder is required")
 
-    remote_audio_path = f"{config.storage_base_folder}/{subfolder}"
+    # Loads dir where audio files are (can only be from remote)
+    res = session.get(config.storage_base_folder + subfolder)
 
-    try:
-        return rclone.ls(remote_audio_path)
-    except Exception as e:
+    if res.status_code == 200:
+        return res
+    else:
         raise Exception(
-            f"Failed to list remote directory {remote_audio_path}. Error: {e}"
+            "Error when getting remote subfolder with status code:",
+            res.status_code,
+            res.json(),
         )
 
 
 def calc_remote_dir(
-    config: PreprocessorConfig, children: list[dict[str, int | str]], subfolder: str
+    config: PreprocessorConfig, session: requests.Session, dir, subfolder
 ):
-    if not children:
+    if dir is None:
+        raise Exception("Input is empty.")
+
+    if len(dir.json()) <= 0:
         raise Exception("Input length is zero.")
+
     if subfolder is None:
         raise Exception("Subfolder is required.")
 
+    children = dir.json()["children"]
     len_children = len(children)
-
+    # for child in tqdm(children):
     for i, child in enumerate(children):
-        item_in_question = child["Name"]
-
         print(
             ">>>",
             datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
             subfolder,
-            item_in_question,
+            child["name"],
             "\t",
-            i + 1,
+            i,
             "out of",
             len_children,
         )
+        item_in_question = child["name"]
+        path = child["path"]
 
-        if melspec_exists_remotely_uncorrupted(config, subfolder, item_in_question):
+        if melspec_exists_remotely_uncorrupted(
+            config, session, subfolder, item_in_question
+        ):
             print(
                 f"All melspecs for {item_in_question} already exist remotely. Skipping..."
             )
@@ -393,36 +410,31 @@ def calc_remote_dir(
             )
             continue
 
-        music_file_path = f"{LOCAL_TEMP_FOLDER}/{subfolder}/{item_in_question}"
-
         if music_file_exists(subfolder, item_in_question):
             print(f"{item_in_question} already exist locally. Skipping download...")
         else:
-            # Download raw audio via rclone instead of requests
-            remote_audio_file = (
-                f"{config.storage_base_folder}/{subfolder}/{item_in_question}"
-            )
-            local_audio_dir = f"{LOCAL_TEMP_FOLDER}/{subfolder}"
+            # Loads raw audio file from remote location (can only be from remote)
+            music_file = session.get(config.storage_base_url + path)
 
-            try:
-                rclone.copy(
-                    in_path=remote_audio_file,
-                    out_path=local_audio_dir,
-                    ignore_existing=True,
-                    args=RCLONE_ARGS,
+            if music_file.status_code == 200:
+                music_file_path = (
+                    LOCAL_TEMP_FOLDER + "/" + subfolder + "/" + item_in_question
                 )
-            except Exception as e:
-                print(
-                    f"Rclone failed to download {item_in_question}: {e}. Skipping this file..."
-                )
-                continue  # Skip to the next file, idempotency will catch it eventually :)
 
-            # Failsafe check
-            if not os.path.exists(music_file_path):
-                print(
-                    f"File {item_in_question} not found locally after rclone download. Skipping..."
-                )
-                continue
+                if not os.path.exists(music_file_path):
+                    try:
+                        f = open(
+                            music_file_path,
+                            mode="xb",
+                        )
+                        f.write(music_file.content)
+                        f.close()
+                    except Exception:
+                        raise Exception(
+                            "Error when saving music file to local temp folder."
+                        )
+            else:
+                raise Exception("Error at music file download:", music_file.status_code)
 
         try:
             with open(
@@ -431,7 +443,10 @@ def calc_remote_dir(
                 ),
                 "wb",
             ) as f:
-                np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=5))
+                np.save(
+                    f,
+                    calc_melspec(subfolder, item_in_question, naive_interval=5),
+                )
 
             with open(
                 local_melspec_path_builder(
@@ -439,7 +454,10 @@ def calc_remote_dir(
                 ),
                 "wb",
             ) as f:
-                np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=15))
+                np.save(
+                    f,
+                    calc_melspec(subfolder, item_in_question, naive_interval=15),
+                )
 
             with open(
                 local_melspec_path_builder(
@@ -447,11 +465,17 @@ def calc_remote_dir(
                 ),
                 "wb",
             ) as f:
-                np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=30))
-
+                np.save(
+                    f,
+                    calc_melspec(subfolder, item_in_question, naive_interval=30),
+                )
         except Exception:
-            traceback.print_exc()
-            print(f"Error calculating melspec for {item_in_question}. Skipping...")
+            raise Exception(
+                "There was an error at:",
+                subfolder,
+                "especially at:",
+                item_in_question,
+            )
 
 
 def is_subfolder_complete(config: PreprocessorConfig, subfolder):
@@ -472,9 +496,9 @@ def is_subfolder_complete(config: PreprocessorConfig, subfolder):
         return False
 
 
-def preprocess_all(config: PreprocessorConfig):
+def preprocess_all(config: PreprocessorConfig, s: requests.Session):
     subfolders = []
-    for i in range(config.start_subfolder, config.end_subfolder, 1):
+    for i in range(0, 4, 1):
         subfolders.append(str(i).zfill(2))
 
     for i, subfolder in enumerate(subfolders):
@@ -490,8 +514,8 @@ def preprocess_all(config: PreprocessorConfig):
         sys_prepare(subfolder)
 
         try:
-            children = load_remote_dir(config, subfolder)
-            calc_remote_dir(config, children, subfolder)
+            dir = load_remote_dir(config, s, subfolder)
+            calc_remote_dir(config, s, dir, subfolder)
         except Exception:
             traceback.print_exc()
             print("Error(s) occured during preprocessing.")
@@ -508,30 +532,54 @@ def preprocess_all(config: PreprocessorConfig):
 
 
 def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
-    """Worker function for multiprocessing."""
+    """
+    Worker function for multiprocessing.
+    Each process MUST create its own requests.Session() because open sockets cannot be pickled.
+    """
+    from urllib3.util import Retry
+    from requests.adapters import HTTPAdapter
+    import requests
 
-    # Run the exact same logic as preprocess_all but only on specific chunks separately
+    # Initialize process-specific session
+    s = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=0.2,
+        backoff_max=30,
+        backoff_jitter=2,
+        status_forcelist=[404, 429, 500, 502, 503, 504],
+        allowed_methods={"GET"},
+    )
+    s.mount("https://", HTTPAdapter(max_retries=retries))
+    s.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
+        }
+    )
+    s.auth = config.storage_auth
+
+    # Run the exact same logic as preprocess_all, but ONLY on this specific chunk
     for i, subfolder in enumerate(subfolders_chunk):
         try:
             if is_subfolder_complete(config, subfolder) and not config.redo_calculation:
                 continue
         except Exception as e:
             print(
-                f"Subfolder {subfolder} doesn't exist remotely. Calculating... Error ignored: {e.args}"
+                f"Subfolder {subfolder} doesn't exist yet. Calculating... Original error ignored: {e.args}"
             )
 
         sys_prepare(subfolder)
 
         try:
-            children = load_remote_dir(config, subfolder)
-            calc_remote_dir(config, children, subfolder)
+            dir = load_remote_dir(config, s, subfolder)
+            calc_remote_dir(config, s, dir, subfolder)
         except Exception:
             traceback.print_exc()
             print(f"Error(s) occured during preprocessing of subfolder {subfolder}.")
         finally:
             copy_melspec_to_remote(config, subfolder)
 
-            # Deletion window just in case of corruption in tail-end subfolders
+            # Deletion window to clean up inside this process's specific chunk
             if i - N_DELETION_WINDOW >= 0:
                 sys_cleanup(subfolders_chunk[i - N_DELETION_WINDOW])
                 sys_cleanup(
@@ -554,7 +602,7 @@ def preprocess_all_mp(
     # etc.
     chunks = [all_subfolders[i::num_processes] for i in range(num_processes)]
 
-    processes: list[mp.Process] = []
+    processes = []
 
     # Spin up child processes
     for chunk in chunks:
@@ -577,8 +625,26 @@ def main():
 
     config = load_config()
 
-    test_connections(config)
+    s = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=0.2,
+        backoff_max=30,
+        backoff_jitter=2,
+        status_forcelist=[404, 429, 500, 502, 503, 504],
+        allowed_methods={"GET"},
+    )
+    s.mount("https://", HTTPAdapter(max_retries=retries))
+    s.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0"
+        }
+    )
+    s.auth = config.storage_auth
 
+    test_connections(config, s)
+
+    # preprocess_all(config, s)
     preprocess_all_mp(
         config,
         start_subfolder=config.start_subfolder,
