@@ -453,14 +453,10 @@ def calc_remote_dir(
             )
 
 
-def is_subfolder_complete(config: PreprocessorConfig, subfolder):
+def is_melspec_subfolder_complete(config: PreprocessorConfig, subfolder):
     if (
         rclone.size(remote_melspec_subfolder_builder(config, subfolder))["count"]
-        == int(
-            rclone.size(
-                config.melspec_remote + ":" + config.melspec_storage + "/" + subfolder
-            )["count"]
-        )
+        == int(rclone.size(config.storage_base_folder + "/" + subfolder)["count"])
         * N_MELSPEC_VARIANTS
     ):
         print(
@@ -478,7 +474,10 @@ def preprocess_all(config: PreprocessorConfig):
 
     for i, subfolder in enumerate(subfolders):
         try:
-            if is_subfolder_complete(config, subfolder) and not config.redo_calculation:
+            if (
+                is_melspec_subfolder_complete(config, subfolder)
+                and not config.redo_calculation
+            ):
                 print("Subfolder is complete. Skipping...")
                 continue
         except Exception as e:
@@ -512,36 +511,42 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
     # Run the exact same logic as preprocess_all but only on specific chunks separately
     for i, subfolder in enumerate(subfolders_chunk):
         try:
-            if is_subfolder_complete(config, subfolder) and not config.redo_calculation:
+            if (
+                is_melspec_subfolder_complete(config, subfolder)
+                and not config.redo_calculation
+            ):
+                # This is perhaps too thorough and best if caught during the actual training phase because
+                # by then it can be handled case by case
+
                 # If subfolder is complete then error check it. Though this can only happen on the second run
-                children = load_remote_dir(config, subfolder)
+                # children = load_remote_dir(config, subfolder)
 
-                if len(children) == 0:
-                    raise Exception("Input length is zero.")
+                # if len(children) == 0:
+                #     raise Exception("Input length is zero.")
 
-                len_children = len(children)
+                # len_children = len(children)
 
-                for i, child in enumerate(children):
-                    item_in_question = child["Name"]
+                # for i, child in enumerate(children):
+                #     item_in_question = child["Name"]
 
-                    print(
-                        ">>>",
-                        datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
-                        subfolder,
-                        item_in_question,
-                        "\t",
-                        i + 1,
-                        "out of",
-                        len_children,
-                    )
+                #     print(
+                #         ">>>",
+                #         datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
+                #         subfolder,
+                #         item_in_question,
+                #         "\t",
+                #         i + 1,
+                #         "out of",
+                #         len_children,
+                #     )
 
-                    if melspec_exists_remotely_uncorrupted(
-                        config, subfolder, item_in_question
-                    ):
-                        print(
-                            f"All melspecs for {item_in_question} already exist remotely. Skipping..."
-                        )
-                        continue
+                #     if melspec_exists_remotely_uncorrupted(
+                #         config, subfolder, item_in_question
+                #     ):
+                #         print(
+                #             f"All melspecs for {item_in_question} already exist remotely. Skipping..."
+                #         )
+                #         continue
 
                 continue
             else:
