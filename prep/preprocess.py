@@ -95,8 +95,6 @@ def load_config() -> PreprocessorConfig:
             os.environ["REMOTE_BASE_FOLDER"] != "",
             os.environ["RCLONE_REMOTE"] != "",
             os.environ["REMOTE_MELSPEC_FOLDER"] != "",
-            os.environ["REMOTE_USERNAME"] != "",
-            os.environ["REMOTE_PASSWORD"] != "",
             os.environ["START_SUBFOLDER"] != "",
             os.environ["END_SUBFOLDER"] != "",
         ]
