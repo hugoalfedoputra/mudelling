@@ -564,6 +564,11 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
 
             copy_melspec_to_remote(config, subfolder)
 
+        except Exception:
+            traceback.print_exc()
+            print(f"Error(s) occured during preprocessing of subfolder {subfolder}.")
+
+        try:
             # Deletion window just in case of corruption in tail-end subfolders
             if i - N_DELETION_WINDOW >= 0:
                 sys_cleanup(subfolders_chunk[i - N_DELETION_WINDOW])
@@ -572,7 +577,9 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
                 )
         except Exception:
             traceback.print_exc()
-            print(f"Error(s) occured during preprocessing of subfolder {subfolder}.")
+            print(
+                f"Error(s) occured during cleanup of {MELSPEC_DIR_PREFIX + subfolders_chunk[i - N_DELETION_WINDOW]}."
+            )
         finally:
             # Continue regardless of errors
             continue
