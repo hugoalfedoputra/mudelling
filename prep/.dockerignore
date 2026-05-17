@@ -14,3 +14,4 @@ temp_old
 *.ipynb
 kbbi_words.txt
 local_preprocess.py
+migrate_melspecs_*.txt

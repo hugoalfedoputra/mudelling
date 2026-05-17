@@ -1,0 +1,19 @@
+services:
+  melspec-migration:
+    build:
+      context: .
+      dockerfile: migration.Dockerfile
+    container_name: melspec-migration
+    env_file:
+      - .env
+    networks:
+      - melspec-inet
+    volumes:
+      # Must be absolute (Linux example)
+      - /home/user/.config/rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro
+      # Must be absolute (Windows example)
+      # - "C:/users/User/bla bla/rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro"
+
+networks:
+  melspec-inet:
+    name: melspec-inet

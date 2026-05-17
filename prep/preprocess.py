@@ -35,6 +35,7 @@ MELSPEC_DIR_PREFIX = "melspec"
 MELSPEC_5S_PREFIX = "5_"
 MELSPEC_15S_PREFIX = "15_"
 MELSPEC_30S_PREFIX = "30_"
+MELSPEC_PREFIXES = [MELSPEC_5S_PREFIX, MELSPEC_15S_PREFIX, MELSPEC_30S_PREFIX]
 
 # These are actually default as per: https://rclone.org/commands/rclone/
 RCLONE_ARGS = [
@@ -63,6 +64,7 @@ class PreprocessorConfig:
     melspec_storage: str
     start_subfolder: int
     end_subfolder: int
+    num_processes: int
 
 
 def load_config() -> PreprocessorConfig:
@@ -87,6 +89,8 @@ def load_config() -> PreprocessorConfig:
         start_subfolder = int(os.environ["START_SUBFOLDER"])
         end_subfolder = int(os.environ["END_SUBFOLDER"])
 
+        num_processes = int(os.environ["NUM_PROCESSES"])
+
     except KeyError as e:
         # args[0] tells which variable is missing
         raise Exception(f".env file is incomplete! Missing: {e.args[0]}") from e
@@ -100,6 +104,7 @@ def load_config() -> PreprocessorConfig:
             os.environ["REMOTE_MELSPEC_FOLDER"] != "",
             os.environ["START_SUBFOLDER"] != "",
             os.environ["END_SUBFOLDER"] != "",
+            os.environ["NUM_PROCESSES"] != "",
         ]
     ):
         raise Exception("One or more variables in the .env file is empty.")
@@ -113,11 +118,12 @@ def load_config() -> PreprocessorConfig:
         melspec_storage=melspec_storage,
         start_subfolder=start_subfolder,
         end_subfolder=end_subfolder,
+        num_processes=num_processes,
     )
 
 
 def remote_melspec_subfolder_builder(
-    config: PreprocessorConfig, subfolder=None, tcon=False
+    config: PreprocessorConfig, melspec_chunk_length, subfolder=None, tcon=False
 ):
     if subfolder is None and tcon:
         return config.melspec_remote + ":" + config.melspec_storage
@@ -127,6 +133,7 @@ def remote_melspec_subfolder_builder(
             + ":"
             + config.melspec_storage
             + "/"
+            + melspec_chunk_length
             + MELSPEC_DIR_PREFIX
             + subfolder
         )
@@ -143,12 +150,14 @@ def test_connections(config: PreprocessorConfig):
     print("Connection test passed.")
 
 
-def sys_prepare(subfolder):
+def sys_prepare(subfolder, melspec_chunk_length):
     if subfolder is None:
         raise Exception("Subfolder is required.")
 
     dir_path = LOCAL_TEMP_FOLDER + "/" + subfolder
-    melspec_dir_path = LOCAL_TEMP_FOLDER + "/" + MELSPEC_DIR_PREFIX + subfolder
+    melspec_dir_path = (
+        LOCAL_TEMP_FOLDER + "/" + melspec_chunk_length + MELSPEC_DIR_PREFIX + subfolder
+    )
 
     if not os.path.exists(LOCAL_TEMP_FOLDER):
         os.mkdir(LOCAL_TEMP_FOLDER)
@@ -164,6 +173,7 @@ def local_melspec_path_builder(subfolder, item_in_question, melspec_chunk_length
     return (
         LOCAL_TEMP_FOLDER
         + "/"
+        + melspec_chunk_length
         + MELSPEC_DIR_PREFIX
         + subfolder
         + "/"
@@ -181,6 +191,7 @@ def remote_melspec_path_builder(
         + ":"
         + config.melspec_storage
         + "/"
+        + melspec_chunk_length
         + MELSPEC_DIR_PREFIX
         + subfolder
         + "/"
@@ -194,25 +205,9 @@ def music_file_exists(subfolder, item_in_question):
     return os.path.exists(LOCAL_TEMP_FOLDER + "/" + subfolder + "/" + item_in_question)
 
 
-def melspec_exists_locally(subfolder, item_in_question):
-    return all(
-        [
-            os.path.exists(
-                local_melspec_path_builder(
-                    subfolder, item_in_question, MELSPEC_5S_PREFIX
-                )
-            ),
-            os.path.exists(
-                local_melspec_path_builder(
-                    subfolder, item_in_question, MELSPEC_15S_PREFIX
-                )
-            ),
-            os.path.exists(
-                local_melspec_path_builder(
-                    subfolder, item_in_question, MELSPEC_30S_PREFIX
-                )
-            ),
-        ]
+def melspec_exists_locally(subfolder, item_in_question, melspec_chunk_length):
+    return os.path.exists(
+        local_melspec_path_builder(subfolder, item_in_question, melspec_chunk_length)
     )
 
 
@@ -220,9 +215,8 @@ def melspec_exists_remotely_uncorrupted(
     config: PreprocessorConfig, subfolder, item_in_question
 ):
     conns = []
-    melspec_prefixes = [MELSPEC_5S_PREFIX, MELSPEC_15S_PREFIX, MELSPEC_30S_PREFIX]
     try:
-        for i, mpref in enumerate(melspec_prefixes):
+        for i, mpref in enumerate(MELSPEC_PREFIXES):
             remote_npy_path = remote_melspec_path_builder(
                 config, subfolder, item_in_question, mpref
             )
@@ -231,7 +225,7 @@ def melspec_exists_remotely_uncorrupted(
             )
 
             try:
-                out_dir = f"{LOCAL_TEMP_FOLDER}/{MELSPEC_DIR_PREFIX}{subfolder}"
+                out_dir = f"{LOCAL_TEMP_FOLDER}/{mpref}{MELSPEC_DIR_PREFIX}{subfolder}"
 
                 rclone.copy(
                     in_path=remote_npy_path,
@@ -260,9 +254,13 @@ def melspec_exists_remotely_uncorrupted(
         return False
 
 
-def copy_melspec_to_remote(config: PreprocessorConfig, subfolder):
-    in_path = LOCAL_TEMP_FOLDER + "/" + MELSPEC_DIR_PREFIX + subfolder
-    out_path = remote_melspec_subfolder_builder(config, subfolder=subfolder)
+def copy_melspec_to_remote(config: PreprocessorConfig, subfolder, melspec_chunk_length):
+    in_path = (
+        LOCAL_TEMP_FOLDER + "/" + melspec_chunk_length + MELSPEC_DIR_PREFIX + subfolder
+    )
+    out_path = remote_melspec_subfolder_builder(
+        config, melspec_chunk_length, subfolder=subfolder
+    )
     ignore_existing = not config.overwrite_remote_copy
 
     # rclone.copy(
@@ -287,6 +285,10 @@ def sys_cleanup(subfolder):
         raise Exception("Subfolder is required.")
 
     dir_path = LOCAL_TEMP_FOLDER + "/" + subfolder
+
+    if not os.path.exists(dir_path):
+        print(f"Directory '{dir_path}' was already removed.")
+        return
 
     # List all files in the directory
     for filename in os.listdir(dir_path):
@@ -358,7 +360,10 @@ def load_remote_dir(config: PreprocessorConfig, subfolder):
 
 
 def calc_remote_dir(
-    config: PreprocessorConfig, children: list[dict[str, int | str]], subfolder: str
+    config: PreprocessorConfig,
+    children: list[dict[str, int | str]],
+    subfolder: str,
+    melspec_chunk_length: str,
 ):
     if len(children) == 0:
         raise Exception("Input length is zero.")
@@ -382,11 +387,11 @@ def calc_remote_dir(
         )
 
         if (
-            melspec_exists_locally(subfolder, item_in_question)
+            melspec_exists_locally(subfolder, item_in_question, melspec_chunk_length)
             and not config.redo_calculation
         ):
             print(
-                f"All melspecs for {item_in_question} already exist locally. Skipping calculation..."
+                f"Melspecs for {item_in_question} ({melspec_chunk_length}) already exist locally. Skipping calculation..."
             )
             continue
 
@@ -424,27 +429,34 @@ def calc_remote_dir(
         try:
             with open(
                 local_melspec_path_builder(
-                    subfolder, item_in_question, MELSPEC_5S_PREFIX
+                    subfolder, item_in_question, melspec_chunk_length
                 ),
                 "wb",
             ) as f:
-                np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=5))
+                np.save(
+                    f,
+                    calc_melspec(
+                        subfolder,
+                        item_in_question,
+                        naive_interval=int(melspec_chunk_length.replace("_", "")),
+                    ),
+                )
 
-            with open(
-                local_melspec_path_builder(
-                    subfolder, item_in_question, MELSPEC_15S_PREFIX
-                ),
-                "wb",
-            ) as f:
-                np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=15))
+            # with open(
+            #     local_melspec_path_builder(
+            #         subfolder, item_in_question, MELSPEC_15S_PREFIX
+            #     ),
+            #     "wb",
+            # ) as f:
+            #     np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=15))
 
-            with open(
-                local_melspec_path_builder(
-                    subfolder, item_in_question, MELSPEC_30S_PREFIX
-                ),
-                "wb",
-            ) as f:
-                np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=30))
+            # with open(
+            #     local_melspec_path_builder(
+            #         subfolder, item_in_question, MELSPEC_30S_PREFIX
+            #     ),
+            #     "wb",
+            # ) as f:
+            #     np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=30))
 
         except Exception:
             traceback.print_exc()
@@ -453,14 +465,22 @@ def calc_remote_dir(
             )
 
 
-def is_melspec_subfolder_complete(config: PreprocessorConfig, subfolder):
-    if (
-        rclone.size(remote_melspec_subfolder_builder(config, subfolder))["count"]
-        == int(rclone.size(config.storage_base_folder + "/" + subfolder)["count"])
-        * N_MELSPEC_VARIANTS
-    ):
+def is_melspec_subfolder_complete(
+    config: PreprocessorConfig, subfolder, melspec_chunk_length
+):
+    remote_melspec_count = int(
+        rclone.size(
+            remote_melspec_subfolder_builder(config, melspec_chunk_length, subfolder)
+        )["count"]
+    )
+
+    remote_audio_count = int(
+        rclone.size(config.storage_base_folder + "/" + subfolder)["count"]
+    )
+
+    if remote_melspec_count == remote_audio_count:
         print(
-            f"Subfolder {subfolder} has complete melspecs. Skipping this subfolder..."
+            f"Subfolder {subfolder} for {melspec_chunk_length} has complete melspecs. Skipping this subfolder..."
         )
         return True
     else:
@@ -468,41 +488,66 @@ def is_melspec_subfolder_complete(config: PreprocessorConfig, subfolder):
 
 
 def preprocess_all(config: PreprocessorConfig):
+    """
+    Single core goodness. Run the preprocessing script using only one core and a lot of your time.
+
+    :param config: Configuration variable based on your .env file
+    :type config: PreprocessorConfig
+    """
+
     subfolders = []
     for i in range(config.start_subfolder, config.end_subfolder, 1):
         subfolders.append(str(i).zfill(2))
 
     for i, subfolder in enumerate(subfolders):
-        try:
-            if (
-                is_melspec_subfolder_complete(config, subfolder)
-                and not config.redo_calculation
-            ):
-                print("Subfolder is complete. Skipping...")
-                continue
-        except Exception as e:
-            print(
-                f"Subfolder doesn't exist yet. Calculating... Original error is ignored: {e.args}"
-            )
+        for mpref in MELSPEC_PREFIXES:
+            try:
+                if (
+                    is_melspec_subfolder_complete(config, subfolder, mpref)
+                    and not config.redo_calculation
+                ):
+                    print("Subfolder is complete. Skipping...")
+                    continue
+            except Exception as e:
+                print(
+                    f"Subfolder doesn't exist yet. Calculating... Original error is ignored: {e.args}"
+                )
 
-        sys_prepare(subfolder)
+            sys_prepare(subfolder, mpref)
 
-        try:
-            children = load_remote_dir(config, subfolder)
-            calc_remote_dir(config, children, subfolder)
-        except Exception:
-            traceback.print_exc()
-            print("Error(s) occured during preprocessing.")
-        finally:
-            copy_melspec_to_remote(config, subfolder)
+            try:
+                children = load_remote_dir(config, subfolder)
+                calc_remote_dir(config, children, subfolder, mpref)
 
-            # Deletion window just in case of corruption in tail-end subfolders
-            if i - N_DELETION_WINDOW >= 0:
-                sys_cleanup(subfolders[i - N_DELETION_WINDOW])
-                sys_cleanup(MELSPEC_DIR_PREFIX + subfolders[i - N_DELETION_WINDOW])
+                copy_melspec_to_remote(config, subfolder, mpref)
 
-            # Make function continue anyway when error
-            continue
+            except Exception:
+                traceback.print_exc()
+                print(
+                    f"Error(s) occured during preprocessing of subfolder {subfolder} for {mpref}."
+                )
+
+        # Deletion window just in case of corruption in tail-end subfolders
+        target_idx = i - N_DELETION_WINDOW
+        if target_idx >= 0:
+            target_subfolder = subfolders[target_idx]
+
+            # 1. Clean up all melspec folders
+            for pref in MELSPEC_PREFIXES:
+                try:
+                    sys_cleanup(pref + MELSPEC_DIR_PREFIX + target_subfolder)
+                except Exception:
+                    traceback.print_exc()
+                    print(
+                        f"Error during cleanup of {pref + MELSPEC_DIR_PREFIX + target_subfolder}."
+                    )
+
+            # 2. Clean up the raw audio folder
+            try:
+                sys_cleanup(target_subfolder)
+            except Exception:
+                traceback.print_exc()
+                print(f"Error during cleanup of {target_subfolder}.")
 
 
 def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
@@ -510,79 +555,90 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
 
     # Run the exact same logic as preprocess_all but only on specific chunks separately
     for i, subfolder in enumerate(subfolders_chunk):
-        try:
-            if (
-                is_melspec_subfolder_complete(config, subfolder)
-                and not config.redo_calculation
-            ):
-                # This is perhaps too thorough and best if caught during the actual training phase because
-                # by then it can be handled case by case
+        for mpref in MELSPEC_PREFIXES:
+            try:
+                if (
+                    is_melspec_subfolder_complete(config, subfolder, mpref)
+                    and not config.redo_calculation
+                ):
+                    # This is perhaps too thorough and best if caught during the actual training phase because
+                    # by then it can be handled case by case
 
-                # If subfolder is complete then error check it. Though this can only happen on the second run
-                # children = load_remote_dir(config, subfolder)
+                    # If subfolder is complete then error check it. Though this can only happen on the second run
+                    # children = load_remote_dir(config, subfolder)
 
-                # if len(children) == 0:
-                #     raise Exception("Input length is zero.")
+                    # if len(children) == 0:
+                    #     raise Exception("Input length is zero.")
 
-                # len_children = len(children)
+                    # len_children = len(children)
 
-                # for i, child in enumerate(children):
-                #     item_in_question = child["Name"]
+                    # for i, child in enumerate(children):
+                    #     item_in_question = child["Name"]
 
-                #     print(
-                #         ">>>",
-                #         datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
-                #         subfolder,
-                #         item_in_question,
-                #         "\t",
-                #         i + 1,
-                #         "out of",
-                #         len_children,
-                #     )
+                    #     print(
+                    #         ">>>",
+                    #         datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
+                    #         subfolder,
+                    #         item_in_question,
+                    #         "\t",
+                    #         i + 1,
+                    #         "out of",
+                    #         len_children,
+                    #     )
 
-                #     if melspec_exists_remotely_uncorrupted(
-                #         config, subfolder, item_in_question
-                #     ):
-                #         print(
-                #             f"All melspecs for {item_in_question} already exist remotely. Skipping..."
-                #         )
-                #         continue
+                    #     if melspec_exists_remotely_uncorrupted(
+                    #         config, subfolder, item_in_question
+                    #     ):
+                    #         print(
+                    #             f"All melspecs for {item_in_question} already exist remotely. Skipping..."
+                    #         )
+                    #         continue
 
-                continue
-            else:
-                print(f"Subfolder {subfolder} is incomplete at remote. Calculating...")
-        except Exception as e:
-            print(
-                f"Subfolder {subfolder} doesn't exist remotely. Calculating... Error ignored: {e.args}"
-            )
-
-        sys_prepare(subfolder)
-
-        try:
-            children = load_remote_dir(config, subfolder)
-            calc_remote_dir(config, children, subfolder)
-
-            copy_melspec_to_remote(config, subfolder)
-
-        except Exception:
-            traceback.print_exc()
-            print(f"Error(s) occured during preprocessing of subfolder {subfolder}.")
-
-        try:
-            # Deletion window just in case of corruption in tail-end subfolders
-            if i - N_DELETION_WINDOW >= 0:
-                sys_cleanup(subfolders_chunk[i - N_DELETION_WINDOW])
-                sys_cleanup(
-                    MELSPEC_DIR_PREFIX + subfolders_chunk[i - N_DELETION_WINDOW]
+                    continue
+                else:
+                    print(
+                        f"Subfolder {subfolder} is incomplete at remote. Calculating..."
+                    )
+            except Exception as e:
+                print(
+                    f"Subfolder {subfolder} doesn't exist remotely. Calculating... Error ignored: {e.args}"
                 )
-        except Exception:
-            traceback.print_exc()
-            print(
-                f"Error(s) occured during cleanup of {MELSPEC_DIR_PREFIX + subfolders_chunk[i - N_DELETION_WINDOW]}."
-            )
-        finally:
-            # Continue regardless of errors
-            continue
+
+            sys_prepare(subfolder, mpref)
+
+            try:
+                children = load_remote_dir(config, subfolder)
+                calc_remote_dir(config, children, subfolder, mpref)
+
+                copy_melspec_to_remote(config, subfolder, mpref)
+
+            except Exception:
+                traceback.print_exc()
+                print(
+                    f"Error(s) occured during preprocessing of subfolder {subfolder} for {mpref}."
+                )
+
+        # Deletion window just in case of corruption in tail-end subfolders
+        target_idx = i - N_DELETION_WINDOW
+        if target_idx >= 0:
+            target_subfolder = subfolders_chunk[target_idx]
+
+            # 1. Clean up all melspec folders
+            for pref in MELSPEC_PREFIXES:
+                try:
+                    sys_cleanup(pref + MELSPEC_DIR_PREFIX + target_subfolder)
+                except Exception:
+                    traceback.print_exc()
+                    print(
+                        f"Error during cleanup of {pref + MELSPEC_DIR_PREFIX + target_subfolder}."
+                    )
+
+            # 2. Clean up the raw audio folder
+            try:
+                sys_cleanup(target_subfolder)
+            except Exception:
+                traceback.print_exc()
+                print(f"Error during cleanup of {target_subfolder}.")
 
 
 def preprocess_all_mp(
@@ -629,7 +685,7 @@ def main():
         config,
         start_subfolder=config.start_subfolder,
         end_subfolder=config.end_subfolder,
-        num_processes=4,
+        num_processes=config.num_processes,
     )
 
 

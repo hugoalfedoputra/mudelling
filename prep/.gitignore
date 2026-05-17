@@ -3,3 +3,6 @@ temp_old/
 temp/
 docker-compose.yml
 preproclogs.txt
+__pycache__
+migrate_*.txt
+migrate-compose.yml
