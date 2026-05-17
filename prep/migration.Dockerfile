@@ -11,14 +11,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install rclone inside the container
-RUN curl -O https://downloads.rclone.org/v1.74.1/rclone-v1.74.1-linux-amd64.zip \
-    && unzip rclone-v1.74.1-linux-amd64.zip \
-    && cd rclone-*-linux-amd64 \
-    && cp rclone /usr/bin/ \
-    && chown root:root /usr/bin/rclone \
-    && chmod 755 /usr/bin/rclone \
-    && cd .. \
-    && rm -rf rclone-* rclone-v1.74.1-linux-amd64.zip
+# RUN curl -O https://downloads.rclone.org/v1.74.1/rclone-v1.74.1-linux-amd64.zip \
+#     && unzip rclone-v1.74.1-linux-amd64.zip \
+#     && cd rclone-*-linux-amd64 \
+#     && cp rclone /usr/bin/ \
+#     && chown root:root /usr/bin/rclone \
+#     && chmod 755 /usr/bin/rclone \
+#     && cd .. \
+#     && rm -rf rclone-* rclone-v1.74.1-linux-amd64.zip
+
+RUN curl https://rclone.org/install.sh | bash
 
 # Set working directory
 WORKDIR /app

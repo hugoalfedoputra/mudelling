@@ -45,8 +45,9 @@ def migrate_remote_folders():
         # Quick check if the old directory exists to prevent rclone from throwing errors
         try:
             rclone.ls(old_folder_path)
-        except Exception:
+        except Exception as e:
             print(f"Directory {old_folder_path} not found. Skipping...")
+            print(f"[-] REAL ERROR DETAILS: {e}")
             continue
 
         for mpref in MELSPEC_PREFIXES:
