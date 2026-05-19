@@ -274,8 +274,8 @@ def main():
         print(
             f"\n\n{'='*60}\nWORKERS FINISHED FOR {mpref}. INITIATING REMOTE CLEANUP...\n{'='*60}"
         )
-        # for subfolder in all_subfolders:
-        #     cleanup_remote_sources(config, mpref, subfolder)
+        for subfolder in all_subfolders:
+            cleanup_remote_sources(config, mpref, subfolder)
 
     print("\n\nAll tasks completed successfully!")
     print(
