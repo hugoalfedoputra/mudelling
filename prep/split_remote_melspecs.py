@@ -2,6 +2,7 @@ import os
 import multiprocessing as mp
 import numpy as np
 import traceback
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 from rclone_python import rclone
@@ -127,10 +128,16 @@ def split_worker(config: PreprocessorConfig, mpref: str, subfolders_chunk: list)
                 local_cf = f"{local_temp}/{cf}"
 
                 try:
+                    start_time = time.time()
                     rclone.copy(
                         in_path=f"{remote_path}/{cf}",
                         out_path=local_temp,
                         args=RCLONE_ARGS,
+                        show_progress=False,
+                    )
+                    elapsed_time = time.time() - start_time
+                    print(
+                        f"Finished copying from remote in {elapsed_time}s. Continuing...\n"
                     )
 
                     if not os.path.exists(local_cf):
@@ -158,7 +165,16 @@ def split_worker(config: PreprocessorConfig, mpref: str, subfolders_chunk: list)
 
             # Upload all newly created split files in this temp folder back to remote
             print(f"[{mpref}{subfolder}] Uploading split files to remote...")
-            rclone.copy(in_path=local_temp, out_path=remote_path, args=RCLONE_ARGS)
+
+            start_time = time.time()
+            rclone.copy(
+                in_path=local_temp,
+                out_path=remote_path,
+                args=RCLONE_ARGS,
+                show_progress=False,
+            )
+            elapsed_time = time.time() - start_time
+            print(f"Finished copying to remote in {elapsed_time}s. Continuing...\n")
 
         except Exception as e:
             print(
