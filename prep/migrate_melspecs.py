@@ -9,6 +9,11 @@ from rclone_python import rclone
 # IT IS THEORETICALLY IDEMPOTENT BUT IT HAS NOT BEEN TESTED YET
 # ====================================================================================================
 
+# ====================================================================================================
+#
+# Globals
+# ====================================================================================================
+
 # This is from preprocess.py; hard-coded so as to not cause import issues during build
 MELSPEC_PREFIXES = ["5_", "15_", "30_"]
 MELSPEC_DIR_PREFIX = "melspec"

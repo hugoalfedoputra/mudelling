@@ -6,3 +6,4 @@ preproclogs.txt
 __pycache__
 migrate_*.txt
 migrate-compose.yml
+split-compose.yml

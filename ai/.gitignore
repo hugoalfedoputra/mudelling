@@ -1,2 +1,6 @@
 ~$*
 manual-check.*
+melspecs/
+download_logs.txt
+__pycache__
+docker-compose.yml

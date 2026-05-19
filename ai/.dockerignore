@@ -1,0 +1,13 @@
+.env
+.env.example
+.gitignore
+.python-version
+.venv
+temp
+*.toml
+*.lock
+*.docx
+*.md
+*.tsv
+*.csv
+*.ipynb

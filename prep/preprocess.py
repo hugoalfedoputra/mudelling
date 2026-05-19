@@ -169,7 +169,9 @@ def sys_prepare(subfolder, melspec_chunk_length):
         os.mkdir(melspec_dir_path)
 
 
-def local_melspec_path_builder(subfolder, item_in_question, melspec_chunk_length):
+def local_melspec_path_builder(
+    subfolder, item_in_question, melspec_chunk_length, chunk_index=0
+):
     return (
         LOCAL_TEMP_FOLDER
         + "/"
@@ -179,12 +181,16 @@ def local_melspec_path_builder(subfolder, item_in_question, melspec_chunk_length
         + "/"
         + melspec_chunk_length
         + item_in_question.split(".")[0]
-        + ".npy"
+        + f"_{chunk_index}.npy"
     )
 
 
 def remote_melspec_path_builder(
-    config: PreprocessorConfig, subfolder, item_in_question, melspec_chunk_length
+    config: PreprocessorConfig,
+    subfolder,
+    item_in_question,
+    melspec_chunk_length,
+    chunk_index=0,
 ):
     return (
         config.melspec_remote
@@ -197,7 +203,7 @@ def remote_melspec_path_builder(
         + "/"
         + melspec_chunk_length
         + item_in_question.split(".")[0]
-        + ".npy"
+        + f"_{chunk_index}.npy"
     )
 
 
@@ -206,8 +212,12 @@ def music_file_exists(subfolder, item_in_question):
 
 
 def melspec_exists_locally(subfolder, item_in_question, melspec_chunk_length):
+    # If the first chunk (index 0) exists locally, it can be safely assumed the rest of the
+    # chunks for this specific audio file were also successfully calculated and saved.
     return os.path.exists(
-        local_melspec_path_builder(subfolder, item_in_question, melspec_chunk_length)
+        local_melspec_path_builder(
+            subfolder, item_in_question, melspec_chunk_length, chunk_index=0
+        )
     )
 
 
@@ -218,10 +228,10 @@ def melspec_exists_remotely_uncorrupted(
     try:
         for i, mpref in enumerate(MELSPEC_PREFIXES):
             remote_npy_path = remote_melspec_path_builder(
-                config, subfolder, item_in_question, mpref
+                config, subfolder, item_in_question, mpref, chunk_index=0
             )
             local_npy_path = local_melspec_path_builder(
-                subfolder, item_in_question, mpref
+                subfolder, item_in_question, mpref, chunk_index=0
             )
 
             try:
@@ -238,7 +248,9 @@ def melspec_exists_remotely_uncorrupted(
                     res = False
                 else:
                     remote_res = np.load(local_npy_path)
-                    if int(remote_res.shape[2]) != N_MELSPEC_LENGTHS[i]:
+                    # The split chunk no longer has the 'chunk' dimension.
+                    # Shape is now (N_MEL_BANDS, time_steps). Check index 1 instead of 2 like before.
+                    if int(remote_res.shape[1]) != N_MELSPEC_LENGTHS[i]:
                         res = False  # Corrupted
                     else:
                         res = True
@@ -373,7 +385,7 @@ def calc_remote_dir(
     len_children = len(children)
 
     for i, child in enumerate(children):
-        item_in_question = child["Name"]
+        item_in_question = str(child["Name"])
 
         print(
             ">>>",
@@ -427,36 +439,23 @@ def calc_remote_dir(
                 continue
 
         try:
-            with open(
-                local_melspec_path_builder(
-                    subfolder, item_in_question, melspec_chunk_length
-                ),
-                "wb",
-            ) as f:
-                np.save(
-                    f,
-                    calc_melspec(
-                        subfolder,
-                        item_in_question,
-                        naive_interval=int(melspec_chunk_length.replace("_", "")),
-                    ),
+            # Calculate the chunks
+            melspec_chunks = calc_melspec(
+                subfolder,
+                item_in_question,
+                naive_interval=int(melspec_chunk_length.replace("_", "")),
+            )
+
+            # Save each chunk as a separate .npy file
+            for chunk_idx, chunk_arr in enumerate(melspec_chunks):
+                chunk_path = local_melspec_path_builder(
+                    subfolder,
+                    item_in_question,
+                    melspec_chunk_length,
+                    chunk_index=chunk_idx,
                 )
-
-            # with open(
-            #     local_melspec_path_builder(
-            #         subfolder, item_in_question, MELSPEC_15S_PREFIX
-            #     ),
-            #     "wb",
-            # ) as f:
-            #     np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=15))
-
-            # with open(
-            #     local_melspec_path_builder(
-            #         subfolder, item_in_question, MELSPEC_30S_PREFIX
-            #     ),
-            #     "wb",
-            # ) as f:
-            #     np.save(f, calc_melspec(subfolder, item_in_question, naive_interval=30))
+                with open(chunk_path, "wb") as f:
+                    np.save(f, chunk_arr)
 
         except Exception:
             traceback.print_exc()
@@ -468,22 +467,38 @@ def calc_remote_dir(
 def is_melspec_subfolder_complete(
     config: PreprocessorConfig, subfolder, melspec_chunk_length
 ):
-    remote_melspec_count = int(
-        rclone.size(
-            remote_melspec_subfolder_builder(config, melspec_chunk_length, subfolder)
-        )["count"]
+    remote_melspec_dir = remote_melspec_subfolder_builder(
+        config, melspec_chunk_length, subfolder=subfolder
     )
 
-    remote_audio_count = int(
-        rclone.size(config.storage_base_folder + "/" + subfolder)["count"]
-    )
+    try:
+        # List the files and count unique raw audio filenames
+        # because 1 audio file now equals multiple chunk files.
+        melspec_files = rclone.ls(remote_melspec_dir)
 
-    if remote_melspec_count == remote_audio_count:
-        print(
-            f"Subfolder {subfolder} for {melspec_chunk_length} has complete melspecs. Skipping this subfolder..."
+        unique_melspecs = set()
+        for f in melspec_files:
+            name = str(f["Name"])
+            # Match format: "5_12345_0.npy" -> Needs at least 2 underscores
+            if name.endswith(".npy") and name.count("_") >= 2:
+                # Strip the prefix (e.g., "5_") and split by the last underscore to get the raw name
+                raw_name = name.replace(melspec_chunk_length, "").rsplit("_", 1)[0]
+                unique_melspecs.add(raw_name)
+
+        remote_audio_count = int(
+            rclone.size(config.storage_base_folder + "/" + subfolder)["count"]
         )
-        return True
-    else:
+
+        if len(unique_melspecs) == remote_audio_count:
+            print(
+                f"Subfolder {subfolder} for {melspec_chunk_length} has complete melspecs. Skipping..."
+            )
+            return True
+        else:
+            return False
+
+    except Exception:
+        # If directory doesn't exist or fails to list, it's not complete
         return False
 
 
