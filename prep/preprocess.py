@@ -4,6 +4,11 @@ import librosa
 import sys
 import traceback
 import multiprocessing as mp
+import pandas as pd
+import json
+import tarfile
+import shutil
+import time
 from datetime import datetime
 from dataclasses import dataclass
 from rclone_python import rclone
@@ -45,8 +50,16 @@ MELSPEC_15S_PREFIX = "15_"
 MELSPEC_30S_PREFIX = "30_"
 MELSPEC_PREFIXES = [MELSPEC_5S_PREFIX, MELSPEC_15S_PREFIX, MELSPEC_30S_PREFIX]
 
-# These are actually default as per: https://rclone.org/commands/rclone/
+# These are actually somewhat default as per: https://rclone.org/commands/rclone/
 RCLONE_ARGS = [
+    "--tpslimit",
+    "24",
+    "--tpslimit-burst",
+    "32",
+    "--transfers",
+    "4",
+    "--checkers",
+    "8",
     "--retries",
     "10",
     "--low-level-retries",
@@ -58,6 +71,8 @@ RCLONE_ARGS = [
     "--retries-sleep",
     "10s",
 ]
+
+STATUS_COMPLETE = "complete"
 
 # ====================================================================================================
 
@@ -73,6 +88,7 @@ class PreprocessorConfig:
     start_subfolder: int
     end_subfolder: int
     num_processes: int
+    all_metadata: dict
 
 
 def load_config() -> PreprocessorConfig:
@@ -121,9 +137,18 @@ def load_config() -> PreprocessorConfig:
             os.environ["START_SUBFOLDER"] != "",
             os.environ["END_SUBFOLDER"] != "",
             os.environ["NUM_PROCESSES"] != "",
+            os.environ["TRAIN_CSV"] != "",
+            os.environ["VAL_CSV"] != "",
+            os.environ["TEST_CSV"] != "",
         ]
     ):
         raise Exception("One or more variables in the .env file is empty.")
+
+    all_metadata = (
+        load_split_metadata(os.environ["TRAIN_CSV"], "train")
+        | load_split_metadata(os.environ["VAL_CSV"], "val")
+        | load_split_metadata(os.environ["TEST_CSV"], "test")
+    )
 
     return PreprocessorConfig(
         overwrite_remote_copy=overwrite_all,
@@ -135,7 +160,24 @@ def load_config() -> PreprocessorConfig:
         start_subfolder=start_subfolder,
         end_subfolder=end_subfolder,
         num_processes=num_processes,
+        all_metadata=all_metadata,
     )
+
+
+def load_split_metadata(csv_path: str, split_name: str) -> dict:
+    # Example CSV load. You might need to do this for train, val, and test CSVs
+    # Returns: {"48/948.mp3": {"split": "train", "tags": ["mood/theme---background"]}}
+    df = pd.read_csv(csv_path)
+    metadata = {}
+    for _, row in df.iterrows():
+        path = row["PATH"]
+        tags = row["TAGS"].split("+")
+        metadata[path] = {
+            "split": split_name,
+            "tags": tags,
+            "track_id": row["TRACK_ID"],
+        }
+    return metadata
 
 
 def remote_melspec_subfolder_builder(
@@ -237,6 +279,7 @@ def melspec_exists_locally(subfolder, item_in_question, melspec_chunk_length):
     )
 
 
+# DEPRECATED
 def melspec_exists_remotely_uncorrupted(
     config: PreprocessorConfig, subfolder, item_in_question
 ):
@@ -282,6 +325,85 @@ def melspec_exists_remotely_uncorrupted(
         return False
 
 
+def archive_and_upload_splits(config: PreprocessorConfig, subfolder, chunk_length):
+    base_melspec_dir = (
+        f"{LOCAL_TEMP_FOLDER}/{chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}"
+    )
+
+    for split in ["train", "val", "test"]:
+        split_dir = f"{base_melspec_dir}/{split}"
+
+        if not os.path.exists(split_dir) or len(os.listdir(split_dir)) == 0:
+            continue  # This subfolder didn't have any files for this split
+
+        tar_filename = f"{chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}.tar"
+        tar_filepath = f"{base_melspec_dir}/{tar_filename}"
+
+        # 1. Create flat uncompressed Tarball
+        files = os.listdir(split_dir)
+        with tarfile.open(tar_filepath, "w") as tar:
+            for f in files:
+                file_path = os.path.join(split_dir, f)
+                # arcname=f ensures the files are at the root of the tarball (no nested folders)
+                tar.add(file_path, arcname=f)
+
+        # 2. Generate manifest
+        npy_files = [f for f in files if f.endswith(".npy")]
+        unique_sources = len(
+            set([f.split("_")[1] for f in npy_files])
+        )  # parse source from "5_948_0.npy"
+
+        manifest_data = {
+            "subfolder": subfolder,
+            "chunk_length": chunk_length,
+            "split": split,
+            "unique_melspec_sources": unique_sources,
+            "total_npy_chunks": len(npy_files),
+            "total_files_in_tar": len(files),  # npy + json
+            "status": "complete",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        manifest_filename = (
+            f"{chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}_manifest.json"
+        )
+        manifest_filepath = f"{base_melspec_dir}/{manifest_filename}"
+
+        with open(manifest_filepath, "w") as f:
+            json.dump(manifest_data, f, indent=4)
+
+        # 3. Upload exactly 2 files
+        remote_dest = f"{config.melspec_remote}:{config.melspec_storage}/{split}"
+
+        ignore_existing = not config.overwrite_remote_copy
+
+        print(f"Uploading archive to remote for {split}...")
+        start_time = time.time()
+        rclone.copy(
+            in_path=tar_filepath,
+            out_path=remote_dest,
+            ignore_existing=ignore_existing,
+            show_progress=False,
+            args=RCLONE_ARGS,
+        )
+        print(f"Done in {time.time() - start_time}s\n")
+
+        print(f"Uploading manifest to remote for {split}...")
+        start_time = time.time()
+        rclone.copy(
+            in_path=manifest_filepath,
+            out_path=remote_dest,
+            ignore_existing=ignore_existing,
+            show_progress=False,
+            args=RCLONE_ARGS,
+        )
+        print(f"Done in {time.time() - start_time}s\n")
+
+        # subprocess.run(["rclone", "copyto", tar_filepath, f"{remote_dest}/{tar_filename}"])
+        # subprocess.run(["rclone", "copyto", manifest_filepath, f"{remote_dest}/{manifest_filename}"])
+
+
+# DEPRECATED
 def copy_melspec_to_remote(config: PreprocessorConfig, subfolder, melspec_chunk_length):
     in_path = (
         LOCAL_TEMP_FOLDER + "/" + melspec_chunk_length + MELSPEC_DIR_PREFIX + subfolder
@@ -308,7 +430,6 @@ def copy_melspec_to_remote(config: PreprocessorConfig, subfolder, melspec_chunk_
 
 def sys_cleanup(subfolder):
     # This function is needed because all outputs are going to be copied to a remote storage
-
     if subfolder is None:
         raise Exception("Subfolder is required.")
 
@@ -318,18 +439,11 @@ def sys_cleanup(subfolder):
         print(f"Directory '{dir_path}' was already removed.")
         return
 
-    # List all files in the directory
-    for filename in os.listdir(dir_path):
-        file_path = os.path.join(dir_path, filename)
-
-        # Check if it is a file (not a subdirectory)
-        if os.path.isfile(file_path):
-            os.remove(file_path)
-            print(f"Deleted file: {filename}")
-
     try:
-        os.rmdir(dir_path)
-        print(f"Directory '{dir_path}' has been removed successfully.")
+        shutil.rmtree(dir_path)
+        print(
+            f"Directory '{dir_path}' and all contents have been removed successfully."
+        )
     except OSError as error:
         print(error)
         print(f"Directory '{dir_path}' could not be removed.")
@@ -403,32 +517,34 @@ def calc_remote_dir(
     for i, child in enumerate(children):
         item_in_question = str(child["Name"])
 
+        # e.g., "48/948.mp3"
+        dict_key = f"{subfolder}/{item_in_question}"
+
         print(
             ">>>",
             datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
-            subfolder,
-            item_in_question,
+            dict_key,
             "\t",
             i + 1,
             "out of",
             len_children,
         )
 
-        if (
-            melspec_exists_locally(subfolder, item_in_question, melspec_chunk_length)
-            and not config.redo_calculation
-        ):
+        # 1. Metadata lookup
+        meta = config.all_metadata.get(dict_key)
+        if not meta:
             print(
-                f"Melspecs for {item_in_question} ({melspec_chunk_length}) already exist locally. Skipping calculation..."
+                f"File {dict_key} not found in train/val/test CSV splits. Skipping..."
             )
             continue
 
-        music_file_path = f"{LOCAL_TEMP_FOLDER}/{subfolder}/{item_in_question}"
+        split = meta["split"]
 
+        # 2. Local audio download using rclone
+        music_file_path = f"{LOCAL_TEMP_FOLDER}/{subfolder}/{item_in_question}"
         if music_file_exists(subfolder, item_in_question):
-            print(f"{item_in_question} already exist locally. Skipping download...")
+            print(f"{item_in_question} already exists locally. Skipping download...")
         else:
-            # Download raw audio via rclone instead of requests
             remote_audio_file = (
                 f"{config.storage_base_folder}/{subfolder}/{item_in_question}"
             )
@@ -445,39 +561,72 @@ def calc_remote_dir(
                 print(
                     f"Rclone failed to download {item_in_question}: {e}. Skipping this file..."
                 )
-                continue  # Skip to the next file, idempotency will catch it eventually :)
+                continue
 
-            # Failsafe check
             if not os.path.exists(music_file_path):
                 print(
                     f"File {item_in_question} not found locally after rclone download. Skipping..."
                 )
                 continue
 
+        # 3. Calculate and save melspecs with its JSON manifest
         try:
-            # Calculate the chunks
+            start_time = time.time()
+            print("Calculating and saving melspec...")
             melspec_chunks = calc_melspec(
                 subfolder,
                 item_in_question,
                 naive_interval=int(melspec_chunk_length.replace("_", "")),
             )
 
-            # Save each chunk as a separate .npy file
+            # Setup split-specific local output directory
+            # e.g., temp/5_melspec48/train/
+            split_dir = f"{LOCAL_TEMP_FOLDER}/{melspec_chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}/{split}"
+            os.makedirs(split_dir, exist_ok=True)
+
             for chunk_idx, chunk_arr in enumerate(melspec_chunks):
-                chunk_path = local_melspec_path_builder(
-                    subfolder,
-                    item_in_question,
-                    melspec_chunk_length,
-                    chunk_index=chunk_idx,
-                )
-                with open(chunk_path, "wb") as f:
+                # e.g., "5_948_0"
+                file_stem = f"{melspec_chunk_length}{item_in_question.split('.')[0]}_{chunk_idx}"
+
+                # Save the Numpy array
+                npy_path = f"{split_dir}/{file_stem}.npy"
+                with open(npy_path, "wb") as f:
                     np.save(f, chunk_arr)
 
+                # Save the WebDataset metadata sidecar JSON
+                json_path = f"{split_dir}/{file_stem}.json"
+                with open(json_path, "w") as f:
+                    json.dump(meta, f)
+
+            print(f"Done in {time.time() - start_time}s\n")
         except Exception:
             traceback.print_exc()
             print(
                 f"Error calculating and saving melspec locally for {item_in_question}. Skipping..."
             )
+
+
+def is_split_manifest_complete(config, chunk_length, subfolder, split):
+    """
+    Checks e.g., remote:melspec_storage/train/5_melspec00_manifest.json
+    """
+    manifest_name = f"{chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}_manifest.json"
+    remote_path = (
+        f"{config.melspec_remote}:{config.melspec_storage}/{split}/{manifest_name}"
+    )
+
+    # rclone cat prints the file contents to stdout
+    # result = subprocess.run(
+    #     ["rclone", "cat", remote_path], capture_output=True, text=True
+    # )
+
+    try:
+        result = rclone.cat(remote_path)
+        manifest = json.loads(result)
+        return manifest.get("status") == STATUS_COMPLETE
+    except Exception:
+        traceback.print_exc()
+        return False
 
 
 def is_melspec_subfolder_complete(
@@ -584,64 +733,57 @@ def preprocess_all(config: PreprocessorConfig):
 def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
     """Worker function for multiprocessing."""
 
-    # Run the exact same logic as preprocess_all but only on specific chunks separately
     for i, subfolder in enumerate(subfolders_chunk):
+
+        # 1. Determine which splits THIS subfolder actually contains
+        # e.g., expected_splits might be {"train", "test"} and no val so if it's only naively checked
+        # it can go on a loop forever
+        expected_splits = set()
+        for key, meta in config.all_metadata.items():
+            if key.startswith(f"{subfolder}/"):
+                expected_splits.add(meta["split"])
+
+        if not expected_splits:
+            print(
+                f"Subfolder {subfolder} has no tracks in metadata. It is not in expected splits: {expected_splits}. Skipping..."
+            )
+            continue
+
         for mpref in MELSPEC_PREFIXES:
             try:
-                if (
-                    is_melspec_subfolder_complete(config, subfolder, mpref)
-                    and not config.redo_calculation
-                ):
-                    # This is perhaps too thorough and best if caught during the actual training phase because
-                    # by then it can be handled case by case
+                # 2. Check if all REQUIRED manifests are complete on the remote
+                splits_complete = []
+                for split in expected_splits:
+                    is_complete = is_split_manifest_complete(
+                        config, mpref, subfolder, split
+                    )
+                    splits_complete.append(is_complete)
 
-                    # If subfolder is complete then error check it. Though this can only happen on the second run
-                    # children = load_remote_dir(config, subfolder)
-
-                    # if len(children) == 0:
-                    #     raise Exception("Input length is zero.")
-
-                    # len_children = len(children)
-
-                    # for i, child in enumerate(children):
-                    #     item_in_question = child["Name"]
-
-                    #     print(
-                    #         ">>>",
-                    #         datetime.now().strftime("%Y-%m-%dT%Hh%Mm%Ss"),
-                    #         subfolder,
-                    #         item_in_question,
-                    #         "\t",
-                    #         i + 1,
-                    #         "out of",
-                    #         len_children,
-                    #     )
-
-                    #     if melspec_exists_remotely_uncorrupted(
-                    #         config, subfolder, item_in_question
-                    #     ):
-                    #         print(
-                    #             f"All melspecs for {item_in_question} already exist remotely. Skipping..."
-                    #         )
-                    #         continue
-
+                if all(splits_complete) and not config.redo_calculation:
+                    print(
+                        f"Subfolder {subfolder} ({mpref}) is complete for all expected splits "
+                        f"{list(expected_splits)} at remote. Skipping..."
+                    )
                     continue
                 else:
                     print(
-                        f"Subfolder {subfolder} is incomplete at remote. Calculating..."
+                        f"Subfolder {subfolder} ({mpref}) is incomplete at remote. Calculating..."
                     )
             except Exception as e:
                 print(
-                    f"Subfolder {subfolder} doesn't exist remotely. Calculating... Error ignored: {e.args}"
+                    f"Error checking remote manifests for {subfolder} ({mpref}). "
+                    f"Calculating... Error ignored: {e.args}"
                 )
 
+            # 3. Main calc loop
             sys_prepare(subfolder, mpref)
 
             try:
                 children = load_remote_dir(config, subfolder)
                 calc_remote_dir(config, children, subfolder, mpref)
 
-                copy_melspec_to_remote(config, subfolder, mpref)
+                # Replaces copy_melspec_to_remote()
+                archive_and_upload_splits(config, subfolder, mpref)
 
             except Exception:
                 traceback.print_exc()
@@ -649,12 +791,12 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
                     f"Error(s) occured during preprocessing of subfolder {subfolder} for {mpref}."
                 )
 
-        # Deletion window just in case of corruption in tail-end subfolders
+        # 4. Deletion window
         target_idx = i - N_DELETION_WINDOW
         if target_idx >= 0:
             target_subfolder = subfolders_chunk[target_idx]
 
-            # 1. Clean up all melspec folders
+            # Clean up all melspec folders
             for pref in MELSPEC_PREFIXES:
                 try:
                     sys_cleanup(pref + MELSPEC_DIR_PREFIX + target_subfolder)
@@ -664,7 +806,7 @@ def preprocess_worker(config: PreprocessorConfig, subfolders_chunk: list):
                         f"Error during cleanup of {pref + MELSPEC_DIR_PREFIX + target_subfolder}."
                     )
 
-            # 2. Clean up the raw audio folder
+            # Clean up the raw audio folder
             try:
                 sys_cleanup(target_subfolder)
             except Exception:

@@ -5,10 +5,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: 4
+          # cpus: 4
           memory: 6G
         reservations:
-          cpus: 3.5
+          # cpus: 3.5
           memory: 5G
     env_file:
       - .env
@@ -24,6 +24,12 @@ services:
       - /home/user/Documents/projects/path/to/rawfiles:/app/raw-audio:ro
       # Windows example
       # - C:/Users/user/Documents/path/to/rawfiles:/app/raw-audio:ro
+
+      # Linux example, Windows is like the above
+      - /path/to/autotagging_moodtheme-train_clean.csv:/app/autotagging_moodtheme-train_clean.csv:ro
+      - /path/to/autotagging_moodtheme-validation_clean.csv:/app/autotagging_moodtheme-validation_clean.csv:ro
+      - /path/to/autotagging_moodtheme-test_clean.csv:/app/autotagging_moodtheme-test_clean.csv:ro
+
 
 networks:
   melspec-inet:
