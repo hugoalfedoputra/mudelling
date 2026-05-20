@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from rclone_python import rclone
 
 # ====================================================================================================
+#
+# THIS SCRIPT MUST BE SPECIFICALLY RUN USING DOCKER
+# THIS SCRIPT MUST BE SPECIFICALLY RUN USING DOCKER
+# THIS SCRIPT MUST BE SPECIFICALLY RUN USING DOCKER
+# ====================================================================================================
+
+# ====================================================================================================
 # Globals
 #
 # READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
@@ -17,6 +24,7 @@ from rclone_python import rclone
 # READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
 # READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
 # ====================================================================================================
+
 # Implicit: n_fft = 2048, hop_length = 512
 SAMPLE_RATE = 16000
 N_MEL_BANDS = 96
@@ -82,7 +90,15 @@ def load_config() -> PreprocessorConfig:
     try:
         # If the key is missing, raise KeyError
         storage_base_url = os.environ["REMOTE_BASE_URL"]
-        storage_base_folder = storage_base_url + ":" + os.environ["REMOTE_BASE_FOLDER"]
+
+        # Handle local origin paths
+        if storage_base_url.upper() == "LOCAL":
+            storage_base_folder = os.environ["REMOTE_BASE_FOLDER"]  # /path/to/rawdata
+        else:
+            storage_base_folder = (
+                storage_base_url + ":" + os.environ["REMOTE_BASE_FOLDER"]
+            )
+
         melspec_remote = os.environ["RCLONE_REMOTE"]
         melspec_storage = os.environ["REMOTE_MELSPEC_FOLDER"]
 

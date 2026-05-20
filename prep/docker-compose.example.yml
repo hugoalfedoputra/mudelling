@@ -6,10 +6,10 @@ services:
       resources:
         limits:
           cpus: 4
-          memory: 4G
+          memory: 6G
         reservations:
           cpus: 3.5
-          memory: 2G
+          memory: 5G
     env_file:
       - .env
     networks:
@@ -19,6 +19,11 @@ services:
       - /home/user/.config/rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro
       # Must be absolute (Windows example)
       # - "C:/users/User/bla bla/rclone/rclone.conf:/root/.config/rclone/rclone.conf:ro"
+      
+      # Linux example
+      - /home/user/Documents/projects/path/to/rawfiles:/app/raw-audio:ro
+      # Windows example
+      # - C:/Users/user/Documents/path/to/rawfiles:/app/raw-audio:ro
 
 networks:
   melspec-inet:
