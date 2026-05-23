@@ -1,32 +1,157 @@
 import os
+import pandas as pd
 import numpy as np
+import json
+import traceback
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import download_melspecs as dl
+import mlflow
+import mlflow.pytorch
+from sklearn.model_selection import ParameterGrid
+from pathlib import Path
 from torchinfo import summary
 from dotenv import load_dotenv
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+from dataclasses import dataclass
 
 # =================================================================================================
 #
 # region Globals
 # GLOBALS
+#
+# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
+# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
+# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
+# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
+# READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
 # =================================================================================================
+N_MEL_BANDS = 96
+
 CNN_N_FILTERS = 64
 GRU_HIDDEN_SIZE = 92
 ATTN_LIN_PROJ = 92
-ATTN_N_HEADS = 4
+ATTN_N_HEADS = 8
 N_LAYERS = 3
 HIDDEN_UNITS = 200
 BATCH_SIZE = 32  # Follow TensorFlow's default
 
+# This is from ../prep/preprocess.py; hard-coded so as to not cause import issues during build
+MELSPEC_PREFIXES = ["5_", "15_", "30_"]
+N_MELSPEC_LENGTHS: list[int] = [
+    157,
+    469,
+    938,
+]  # Melspec output lengths (for these globals; hardcoded)
+MELSPEC_DIR_PREFIX = "melspec"
+
+LOCAL_TEMP_FOLDER = "./temp"
+LOCAL_MANIFEST_FOLDER = "manifest"
+LOCAL_ARCHIVE_FOLDER = "archive"
+LOCAL_RAW_FOLDER = "raw"
+
 
 # region Global helpers
+@dataclass
+class TrainingConfig:
+    melspec_remote: str
+    melspec_storage: str
+    melspec_chunk_length: str
+    melspec_time_step: int
+    start_subfolder: int
+    end_subfolder: int
+    mlflow_username: str
+    mlflow_password: str
+    mlflow_tracking_uri: str
+    training_metadata_path: str
+    dataset_relative_frequencies: np.ndarray
+    setup_params: dict
+
+
+def _calculate_dataset_relative_frequencies(training_metadata_path) -> np.ndarray:
+    tdf = pd.read_csv(training_metadata_path)
+    tdf["TAGS"] = tdf["TAGS"].apply(lambda x: x.replace("mood/theme---", "").split("+"))
+
+    freqs = {}
+    p_freqs = {}
+
+    def update_freqs(x):
+        for xi in x:
+            freqs.update({xi: freqs.get(xi, 0) + 1})
+
+    tdf["TAGS"].apply(lambda x: update_freqs(x))
+
+    tdf_sum = sum(freqs.values())
+    for sf in sorted(freqs.keys()):
+        p_freqs.update({sf: float(freqs.get(sf, 0)) / tdf_sum})
+
+    p = np.array(list(p_freqs.values()))
+
+    return p
+
+
+def load_config():
+    """Load configuration from the .env file."""
+    load_dotenv()
+
+    # If one or more keys are empty, raise an error
+    if not all(
+        [
+            os.environ["RCLONE_REMOTE"] != "",
+            os.environ["REMOTE_MELSPEC_FOLDER"] != "",
+            os.environ["START_SUBFOLDER"] != "",
+            os.environ["END_SUBFOLDER"] != "",
+            os.environ["MELSPEC_PREFIX_INDEX"] != "",
+            os.environ["MLFLOW_TRACKING_USERNAME"] != "",
+            os.environ["MLFLOW_TRACKING_PASSWORD"] != "",
+            os.environ["MLFLOW_TRACKING_URI"] != "",
+            os.environ["TRAINING_METADATA_CSV"] != "",
+        ]
+    ):
+        raise Exception("One or more variables in the .env file is empty.")
+
+    try:
+        melspec_remote = os.environ["RCLONE_REMOTE"]
+        melspec_storage = os.environ["REMOTE_MELSPEC_FOLDER"]
+        start_subfolder = int(os.environ["START_SUBFOLDER"])
+        end_subfolder = int(os.environ["END_SUBFOLDER"])
+        melspec_chunk_length = MELSPEC_PREFIXES[int(os.environ["MELSPEC_PREFIX_INDEX"])]
+        melspec_time_step = N_MELSPEC_LENGTHS[int(os.environ["MELSPEC_PREFIX_INDEX"])]
+        mlflow_username = os.environ["MLFLOW_TRACKING_USERNAME"]
+        mlflow_password = os.environ["MLFLOW_TRACKING_PASSWORD"]
+        mlflow_tracking_uri = os.environ["MLFLOW_TRACKING_URI"]
+        training_metadata_path = os.environ["TRAINING_METADATA_CSV"]
+        dataset_relative_frequencies = _calculate_dataset_relative_frequencies(
+            training_metadata_path=training_metadata_path
+        )
+    except KeyError as e:
+        traceback.print_exc()
+        raise Exception(f"Missing env var: {e.args[0]}")
+
+    return TrainingConfig(
+        melspec_remote=melspec_remote,
+        melspec_storage=melspec_storage,
+        melspec_chunk_length=melspec_chunk_length,
+        melspec_time_step=melspec_time_step,
+        start_subfolder=start_subfolder,
+        end_subfolder=end_subfolder,
+        mlflow_username=mlflow_username,
+        mlflow_password=mlflow_password,
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        training_metadata_path=training_metadata_path,
+        dataset_relative_frequencies=dataset_relative_frequencies,
+        setup_params={"yInput": 96},
+    )
+
+
 def check_system():
     import torch
 
-    load_dotenv()
+    # load_dotenv()
 
     # Only for AMD GPUs on ROCm, NVIDIA should just work out of the box
     _ = os.environ["HSA_OVERRIDE_GFX_VERSION"]
@@ -69,7 +194,7 @@ def print_summary(model, input_data):
     )
 
 
-def download_melspecs():
+def download_all_melspecs_first():
     dl.main()
 
 
@@ -78,31 +203,8 @@ def download_melspecs():
 
 # region Model helpers
 # Helper to initialize weights similarly to tf.contrib.layers.variance_scaling_initializer()
-def init_conv_linear_weights(m):
-    if isinstance(m, (nn.Conv2d, nn.Conv1d, nn.Linear)):
-        nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
-        if m.bias is not None:
-            nn.init.constant_(m.bias, 0)
-
-
-def get_emb(sin_inp):
-    """
-    Positional encoding code from tatp22/multidim-positional-encoding)
-
-    Gets a base embedding for one dimension with sin and cos intertwined
-    """
-    emb = torch.stack((sin_inp.sin(), sin_inp.cos()), dim=-1)
-    return torch.flatten(emb, -2, -1)
-
-
-def count_parameters(model):
-    """Helper function to count trainable parameters"""
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-def dummy_run():
+def dummy_run(config: TrainingConfig):
     # Declare config and dummy data
-    config = {"setup_params": {"yInput": 96}}
 
     # Let's pretend this is transposed from (BATCH_SIZE, 96, 469) i.e. actual data shape from the dataloader
     dummy_input = torch.randn(BATCH_SIZE, 469, 96)
@@ -137,13 +239,11 @@ def dummy_run():
 
     model_attn = MusicModel(
         frontend=Frontend(config, num_filt=16),
-        # backend=AttentionBackend(dummy_frontend_shape, nhead=4, num_layers=2),
         backend=AttentionBackend(
             dummy_frontend_shape,
             project=True,
             d_model=ATTN_LIN_PROJ,
             n_heads=ATTN_N_HEADS,
-            num_layers=3,
         ),
         # 928 becaues attention takes the 464 channels as is. Though, can be projected to
         # larger # of features if needed
@@ -188,6 +288,54 @@ def dummy_run():
 
     print("\nSelf-Attention")
     print_summary(model_attn, input_data=dummy_input)
+
+
+def bour_weighted_bce_loss(outputs: torch.Tensor, labels: torch.Tensor, p: np.ndarray):
+    """
+    Calculate one row of weighted BCE loss as defined in Bour's (2021) paper titled
+    "Frequency Dependent Convolutions for Music Tagging"
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Calculate weights for positive and negative classes
+    pt = torch.from_numpy(p).to(device)
+    weight_pos = 2.0 / (1.0 + pt)
+    weight_neg = (2.0 * pt) / (1.0 + pt)
+
+    # Calculate the two terms of the loss
+    # PyTorch BCELoss clamps log function output to be GTE -100
+    # as per docs: https://docs.pytorch.org/docs/2.12/generated/torch.nn.BCELoss.html
+    term1 = weight_pos * labels * torch.clamp(torch.log(outputs), min=-100)
+    term2 = (
+        weight_neg * (1.0 - labels) * torch.clamp(torch.log(1.0 - outputs), min=-100)
+    )
+
+    # Sum over the classes and average over the batch and number of classes
+    c = outputs.size(-1)
+    loss = -torch.sum(term1 + term2) / c
+    return loss
+
+
+def init_conv_linear_weights(m):
+    if isinstance(m, (nn.Conv2d, nn.Conv1d, nn.Linear)):
+        nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+
+
+def get_emb(sin_inp):
+    """
+    Positional encoding code from tatp22/multidim-positional-encoding)
+
+    Gets a base embedding for one dimension with sin and cos intertwined
+    """
+    emb = torch.stack((sin_inp.sin(), sin_inp.cos()), dim=-1)
+    return torch.flatten(emb, -2, -1)
+
+
+def count_parameters(model):
+    """Helper function to count trainable parameters"""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 class PositionalEncoding1D(nn.Module):
@@ -277,11 +425,11 @@ class Frontend(nn.Module):
     function. This might change if aiming for direct conversion from source code.
     """
 
-    def __init__(self, config, num_filt=16):
+    def __init__(self, config: TrainingConfig, num_filt=16):
         super(Frontend, self).__init__()
 
         self.num_filt = num_filt
-        y_input = config["setup_params"]["yInput"]
+        y_input = config.setup_params["yInput"]
 
         # [TIMBRE] filter shape 1: 7x0.9f
         # Input padding in TF was [[0,0], [3,3], [0,0], [0,0]] (Time padding).
@@ -415,7 +563,7 @@ class Frontend(nn.Module):
         # [TIMBRE] filter shape 3: 1x0.9f
         p3 = run_2d_branch(self.conv3, self.bn_conv3, input_layer)
 
-        # [TIMBRE] filter shape 3 (sic - meant 4): 7x0.4f
+        # [TIMBRE] filter shape 4: 7x0.4f
         p4 = run_2d_branch(self.conv4, self.bn_conv4, input_layer)
 
         # [TIMBRE] filter shape 5: 3x0.4f
@@ -472,10 +620,10 @@ class Frontend(nn.Module):
 # endregion
 # region Backends
 class CNNBackend(nn.Module):
-    def __init__(self, inp_shape):
+    def __init__(self, input_shape):
         super(CNNBackend, self).__init__()
         # inp_shape from Frontend is [Batch, Time, Channels, 1]
-        C = inp_shape[2]
+        C = input_shape[2]
 
         self.conv1 = nn.Conv2d(
             in_channels=1,
@@ -603,15 +751,15 @@ class GRUBackend(nn.Module):
 class AttentionBackend(nn.Module):
     def __init__(
         self,
-        inp_shape,
+        input_shape,
         project=False,
         d_model=ATTN_LIN_PROJ,
         n_heads=ATTN_N_HEADS,
-        num_layers=N_LAYERS,
+        num_layers=1,
     ):
         super(AttentionBackend, self).__init__()
         # inp_shape from Frontend is[Batch, Time, Channels, 1]
-        c = inp_shape[2]
+        c = input_shape[2]
 
         # Linear Projection:
         # Project the large concatenated channel size (c) down to N_FILTERS (d_model)
@@ -632,7 +780,6 @@ class AttentionBackend(nn.Module):
                 nhead=n_heads,
                 dim_feedforward=d_model,
                 batch_first=True,
-                dropout=0.0,
             )
         else:
             self.encoder_layer = nn.TransformerEncoderLayer(
@@ -640,10 +787,17 @@ class AttentionBackend(nn.Module):
                 nhead=n_heads,
                 dim_feedforward=c,
                 batch_first=True,
-                dropout=0.0,
             )
 
-        self.transformer = nn.TransformerEncoder(
+        self.transformer1 = nn.TransformerEncoder(
+            self.encoder_layer, num_layers=num_layers
+        )
+
+        self.transformer2 = nn.TransformerEncoder(
+            self.encoder_layer, num_layers=num_layers
+        )
+
+        self.transformer3 = nn.TransformerEncoder(
             self.encoder_layer, num_layers=num_layers
         )
 
@@ -667,7 +821,9 @@ class AttentionBackend(nn.Module):
         )  # -> [B, T, 464]; 464 is depending if it's projected or not
 
         # Run through Self-Attention layers
-        out = self.transformer(x)  # ->[B, T, 464]
+        out = self.transformer1(x)  # ->[B, T, 464]
+        out = self.transformer2(out)  # ->[B, T, 464]
+        out = self.transformer3(out)  # ->[B, T, 464]
 
         # Pool across Time. Transform [B, T, 464] ->[B, 464, T]
         out = out.permute(0, 2, 1)
@@ -745,10 +901,222 @@ class MusicModel(nn.Module):
 
 # region Dataloader
 # endregion
+def build_vocabulary(csv_path: str):
+    """
+    Reads the dataset CSV and builds a mapping of string tags to integer indices.
+    """
+    df = pd.read_csv(csv_path)
+    all_tags = set()
+
+    for tags_str in df["TAGS"].dropna():
+        tags = tags_str.split("+")
+        for tag in tags:
+            all_tags.add(tag)
+
+    vocab = sorted(list(all_tags))
+    tag2idx = {tag: idx for idx, tag in enumerate(vocab)}
+
+    print(f"Loaded vocabulary with {len(vocab)} unique tags.")
+    return tag2idx, vocab
+
+
+class MusicDataset(Dataset):
+    def __init__(self, split, base_dir, tag2idx, chunk_length_prefix):
+        self.base_dir = Path(base_dir)
+        self.tag2idx = tag2idx
+        self.num_classes = len(tag2idx)
+
+        # Scan directory recursively for all .npy files
+        search_pattern = f"{chunk_length_prefix}{MELSPEC_DIR_PREFIX}*/*.npy"
+        self.npy_files = list(self.base_dir.glob(search_pattern))
+
+        if len(self.npy_files) == 0:
+            print(f"\nWARN: No .npy files found in {self.base_dir}", end="\n")
+
+    def __len__(self):
+        return len(self.npy_files)
+
+    def __getitem__(self, index):
+        npy_path: Path = self.npy_files[index]
+        json_path = npy_path.with_suffix(".json")
+
+        # 1. Load melspec
+        melspec = np.load(npy_path)
+
+        # Transpose spectrogram which height is mel-bins to time
+        melspec = melspec.transpose()
+        melspec_tensor = torch.from_numpy(melspec).float()
+
+        # 2. Load JSON tags
+        with open(json_path, "r") as f:
+            content = json.load(f)
+
+        tags = content.get("tags", [])
+        if isinstance(tags, str):
+            tags = tags.split("+")
+
+        # 3. Create multi-hot encoded label tensor
+        label_tensor = torch.zeros(self.num_classes, dtype=torch.float32)
+        for t in tags:
+            if t in self.tag2idx:
+                label_tensor[self.tag2idx[t]] = 1.0
+
+        return melspec_tensor, label_tensor
 
 
 # region Training
 # endregion
+def train_model(
+    config: TrainingConfig,
+    model: MusicModel,
+    training_loader: DataLoader,
+    optimizer: optim.Adam,
+    device,
+    epochs=1,
+):
+    """Custom criterion/loss using Bour's (2021) as implemented in `bour_weighted_bce_loss(outputs, labels)` in this file."""
+
+    model.train()
+
+    for epoch in range(epochs):
+        running_loss = 0.0
+
+        len_training_loader = len(training_loader)
+
+        for batch_idx, (melspecs, labels) in enumerate(training_loader):
+            print(f"Training batch {batch_idx}/{len_training_loader}. Epoch: {epoch}")
+            start_time = time.time()
+
+            melspecs = melspecs.to(device)
+            labels = labels.to(device)
+
+            # Zero gradients
+            optimizer.zero_grad()
+
+            # Forward pass
+            outputs = model(melspecs)
+
+            # Compute loss
+            loss = bour_weighted_bce_loss(
+                outputs, labels, p=config.dataset_relative_frequencies
+            )
+
+            # Backward pass & optimize
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+
+            # There's no correlation with N_LAYERS but it's so that it isn't a magic number
+            if batch_idx < N_LAYERS:
+                print(
+                    f"Approximate training time per batch: {time.time() - start_time}s"
+                )
+
+        avg_epoch_loss = running_loss / len_training_loader
+        print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_epoch_loss:.4f}")
+
+        # Log epoch-level metrics to MLflow
+        mlflow.log_metric("train_loss", avg_epoch_loss, step=epoch)
+
+    return avg_epoch_loss
+
+
+def run_hyperparameter_search(config: TrainingConfig):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+
+    tag2idx, vocab = build_vocabulary(config.training_metadata_path)
+    num_classes = len(vocab)
+
+    train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
+    train_dataset = MusicDataset(
+        split="train",
+        base_dir=train_dir,
+        tag2idx=tag2idx,
+        chunk_length_prefix=config.melspec_chunk_length,
+    )
+
+    param_grid = {
+        "backend_type": ["CNN", "GRU", "ATTN"],
+        "batch_size": [32],
+        "epochs": [1],
+        "learning_rate": [1e-2, 5e-3, 1e-3],
+        # "cnn_dropout": [0.0, 0.25, 0.5],
+        # "gru_clipping": [0.3, 0.5, 1.0],
+        # "attn_n_heads": [2, 4, 8],
+    }
+
+    grid = ParameterGrid(param_grid)
+    print(f"Starting grid search with {len(grid)} total combinations.")
+
+    mlflow.set_experiment(
+        f"{config.melspec_chunk_length}_chunk_music_model_grid_search"
+    )
+
+    for idx, params in enumerate(grid):
+        print(f"\n>>> Grid search run: {idx+1}/{len(grid)}")
+        print(f"Parameters: {params}")
+
+        with mlflow.start_run(run_name=f"grid_search_run_{idx}"):
+            # Log hyperparameters to MLflow
+            mlflow.log_params(params)
+
+            training_loader = DataLoader(
+                train_dataset,
+                batch_size=params["batch_size"],
+                shuffle=True,
+                num_workers=4,
+                pin_memory=True,
+            )
+
+            # Build the Model based on params
+            frontend = Frontend(config=config)
+
+            # Dummy tensor to dynamically get frontend output shape
+            dummy_input = torch.zeros(
+                1, config.melspec_time_step, N_MEL_BANDS
+            )  # [Batch, Time, Freq]
+            frontend_out = frontend(dummy_input)
+
+            if params["backend_type"] == "CNN":
+                backend = CNNBackend(input_shape=frontend_out.shape)
+                backend_out_features = CNN_N_FILTERS * 2
+            elif params["backend_type"] == "GRU":
+                backend = GRUBackend(input_shape=frontend_out.shape)
+                backend_out_features = GRU_HIDDEN_SIZE * 2
+            elif params["backend_type"] == "ATTN":
+                backend = AttentionBackend(
+                    input_shape=frontend_out.shape,
+                    project=True,
+                    d_model=ATTN_LIN_PROJ,
+                    n_heads=ATTN_N_HEADS,
+                )
+                backend_out_features = ATTN_LIN_PROJ * 2
+
+            classifier = Classifier(
+                in_features=backend_out_features,
+                hidden_units=HIDDEN_UNITS,
+                out_features=num_classes,
+            )
+
+            model = MusicModel(frontend, backend, classifier).to(device)
+
+            optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+
+            final_loss = train_model(
+                config=config,
+                model=model,
+                training_loader=training_loader,
+                optimizer=optimizer,
+                device=device,
+                epochs=params["epochs"],
+            )
+
+            # Save PyTorch model as artifact to MLflow
+            mlflow.pytorch.log_model(model, "model_weights")
+
+            print(f"Run {idx+1} completed with final loss: {final_loss:.4f}")
 
 
 # region Validation
@@ -761,11 +1129,17 @@ class MusicModel(nn.Module):
 
 # region Main
 def main():
+    config = load_config()
+
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri)
+
     check_system()
 
-    download_melspecs()
+    download_all_melspecs_first()
 
-    dummy_run()
+    # dummy_run(config=config)
+
+    run_hyperparameter_search(config=config)
 
 
 if __name__ == "__main__":
