@@ -1273,36 +1273,35 @@ def run_training(
             pin_memory=False,
         )
 
-        if resume_checkpoint is None:
-            frontend = Frontend(config=config)
+        frontend = Frontend(config=config)
 
-            # Dummy tensor to dynamically get frontend output shape
-            dummy_input = torch.zeros(1, config.melspec_time_step, N_MEL_BANDS)
-            frontend_out = frontend(dummy_input)
+        # Dummy tensor to dynamically get frontend output shape
+        dummy_input = torch.zeros(1, config.melspec_time_step, N_MEL_BANDS)
+        frontend_out = frontend(dummy_input)
 
-            if params["backend_type"] == "CNN":
-                backend = CNNBackend(input_shape=frontend_out.shape)
-                backend_out_features = CNN_N_FILTERS * 2
-            elif params["backend_type"] == "GRU":
-                backend = GRUBackend(input_shape=frontend_out.shape)
-                backend_out_features = GRU_HIDDEN_SIZE * 2
-            elif params["backend_type"] == "ATTN":
-                backend = AttentionBackend(
-                    input_shape=frontend_out.shape,
-                    project=True,
-                    d_model=ATTN_LIN_PROJ,
-                    n_heads=ATTN_N_HEADS,
-                )
-                backend_out_features = ATTN_LIN_PROJ * 2
-
-            classifier = Classifier(
-                in_features=backend_out_features,
-                hidden_units=HIDDEN_UNITS,
-                out_features=num_classes,
+        if params["backend_type"] == "CNN":
+            backend = CNNBackend(input_shape=frontend_out.shape)
+            backend_out_features = CNN_N_FILTERS * 2
+        elif params["backend_type"] == "GRU":
+            backend = GRUBackend(input_shape=frontend_out.shape)
+            backend_out_features = GRU_HIDDEN_SIZE * 2
+        elif params["backend_type"] == "ATTN":
+            backend = AttentionBackend(
+                input_shape=frontend_out.shape,
+                project=True,
+                d_model=ATTN_LIN_PROJ,
+                n_heads=ATTN_N_HEADS,
             )
+            backend_out_features = ATTN_LIN_PROJ * 2
 
-            model = MusicModel(frontend, backend, classifier).to(device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+        classifier = Classifier(
+            in_features=backend_out_features,
+            hidden_units=HIDDEN_UNITS,
+            out_features=num_classes,
+        )
+
+        model = MusicModel(frontend, backend, classifier).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
         if resume_checkpoint is not None:
             # Type is ignored because torch.load() returns Any :(
