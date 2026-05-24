@@ -1081,6 +1081,11 @@ def _train_one_epoch(
 
 
 def run_hyperparameter_search(config: TrainingConfig):
+    """
+    This function does not implement the ability to resume training from a checkpoint even if
+    it logs the full model as an artifact to MLflow. If it needs to be resumed, simply use the
+    training function.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
@@ -1175,7 +1180,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                 print(f"\n>>> Starting Epoch {epoch+1}/{epochs}")
 
                 # 1. Train one epoch
-                _ = _train_one_epoch(
+                train_avg_loss = _train_one_epoch(
                     config=config,
                     model=model,
                     training_loader=training_loader,
@@ -1205,11 +1210,34 @@ def run_hyperparameter_search(config: TrainingConfig):
                 current_pr_auc = val_metrics["val_macro_pr_auc"]
                 val_macro_pr_auc_history.append(current_pr_auc)
 
-            # 4. Save the latest model for this run once all epochs finish
-            mlflow.pytorch.log_model(model, "model_weights_latest")
-            print(
-                f"Run {idx+1} completed. Best PR-AUC: {max(val_macro_pr_auc_history):.8f}"
-            )
+                # Save at every 10 epochs during tuning and at the last epoch
+                is_multiple_of_10 = (epoch + 1) % 10 == 0
+                is_final_epoch = epoch == epochs - 1
+                if is_multiple_of_10 or is_final_epoch:
+                    # Save locally then save as MLflow artifact
+                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
+                    os.makedirs(checkpoint_dir, exist_ok=True)
+                    local_ckpt_path = f"{checkpoint_dir}/tuning_checkpoint_{epoch}.pth"
+
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "avg_train_loss": train_avg_loss,
+                            "val_pr_auc": current_pr_auc,
+                        },
+                        local_ckpt_path,
+                    )
+
+                    # Upload the raw .pth file as an MLflow artifact
+                    mlflow.log_artifact(
+                        local_ckpt_path,
+                        artifact_path=f"tuning_checkpoint_epoch_{epoch}",
+                    )
+                    print(
+                        f"Full PyTorch checkpoint saved and uploaded as MLflow artifact!"
+                    )
 
 
 def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoint=None):
@@ -1359,7 +1387,7 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
             if len(val_macro_pr_auc_history) == 0:
                 best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
                 mlflow.pytorch.log_model(model, best_model_name)
-                print(f"New best model found and logged to MLFlow: ({best_model_name})")
+                print(f"New best model found and logged to MLflow: ({best_model_name})")
 
             # Checkpoint based on if the PR-AUC score is maximum against previous epochs
             # This is the same exact code as the if block above
@@ -1370,7 +1398,7 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
                     )
                     mlflow.pytorch.log_model(model, best_model_name)
                     print(
-                        f"New best model found and logged to MLFlow: ({best_model_name})"
+                        f"New best model found and logged to MLflow: ({best_model_name})"
                     )
 
             # 6. Checkpoint latest model
@@ -1380,9 +1408,10 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
                 )
                 mlflow.pytorch.log_model(model, latest_model_name)
                 print(
-                    f"Latest training phase complete and logged to MLFlow: ({latest_model_name})"
+                    f"Latest training phase complete and logged to MLflow: ({latest_model_name})"
                 )
 
+                # Save locally then save as MLflow artifact
                 checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
                 os.makedirs(checkpoint_dir, exist_ok=True)
                 local_ckpt_path = f"{checkpoint_dir}/resume_checkpoint.pth"
