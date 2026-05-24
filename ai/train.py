@@ -1199,148 +1199,152 @@ def run_training(config: TrainingConfig, json_config_path: str):
         f"{config.melspec_chunk_length}_chunk_music_model_{params['backend_type']}"
     )
     mlflow.set_experiment(experiment_name)
-    mlflow.log_params(params)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on: {device}")
+    with mlflow.start_run(run_name=f"{params['backend_type']}_{int(time.time())}"):
+        mlflow.log_params(params)
 
-    tag2idx, vocab = build_vocabulary(config.training_metadata_path)
-    num_classes = len(vocab)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Training on: {device}")
 
-    train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
-    train_dataset = MusicDataset(
-        split="train",
-        base_dir=train_dir,
-        tag2idx=tag2idx,
-        chunk_length_prefix=config.melspec_chunk_length,
-    )
-    training_loader = DataLoader(
-        train_dataset,
-        batch_size=params["batch_size"],
-        shuffle=True,
-        num_workers=config.num_processes,
-        pin_memory=False,
-    )
+        tag2idx, vocab = build_vocabulary(config.training_metadata_path)
+        num_classes = len(vocab)
 
-    # Download and setup validation data
-    print("Preparing validation dataset...")
-    dl.main(split="val")
-    val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
-    val_dataset = MusicDataset(
-        split="val",
-        base_dir=val_dir,
-        tag2idx=tag2idx,
-        chunk_length_prefix=config.melspec_chunk_length,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=params["batch_size"],
-        shuffle=False,  # No need to shuffle validation data
-        num_workers=config.num_processes,
-        pin_memory=False,
-    )
-
-    frontend = Frontend(config=config)
-
-    # Dummy tensor to dynamically get frontend output shape
-    dummy_input = torch.zeros(1, config.melspec_time_step, N_MEL_BANDS)
-    frontend_out = frontend(dummy_input)
-
-    if params["backend_type"] == "CNN":
-        backend = CNNBackend(input_shape=frontend_out.shape)
-        backend_out_features = CNN_N_FILTERS * 2
-    elif params["backend_type"] == "GRU":
-        backend = GRUBackend(input_shape=frontend_out.shape)
-        backend_out_features = GRU_HIDDEN_SIZE * 2
-    elif params["backend_type"] == "ATTN":
-        backend = AttentionBackend(
-            input_shape=frontend_out.shape,
-            project=True,
-            d_model=ATTN_LIN_PROJ,
-            n_heads=ATTN_N_HEADS,
+        train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
+        train_dataset = MusicDataset(
+            split="train",
+            base_dir=train_dir,
+            tag2idx=tag2idx,
+            chunk_length_prefix=config.melspec_chunk_length,
         )
-        backend_out_features = ATTN_LIN_PROJ * 2
-
-    classifier = Classifier(
-        in_features=backend_out_features,
-        hidden_units=HIDDEN_UNITS,
-        out_features=num_classes,
-    )
-
-    model = MusicModel(frontend, backend, classifier).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
-
-    # Local history array
-    val_loss_avg_history = []
-    val_loss_std_history = []
-    val_macro_pr_auc_history = []
-    val_macro_roc_auc_history = []
-
-    # Epoch loop
-    epochs = params["epochs"]
-
-    for epoch in range(epochs):
-        print(f"\n>>>Starting Epoch {epoch+1}/{epochs}")
-
-        # 1. Train
-        train_avg_loss = _train_one_epoch(
-            config=config,
-            model=model,
-            training_loader=training_loader,
-            optimizer=optimizer,
-            device=device,
-            epoch=epoch,
-        )
-        print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {train_avg_loss:.8f}")
-        mlflow.log_metric("train_loss", train_avg_loss, step=epoch)
-
-        # 2. Validate
-        print("Running validation inference...")
-        val_metrics = _validate_model(
-            config=config,
-            model=model,
-            val_loader=val_loader,
-            device=device,
-            vocab=vocab,
-        )
-        print(
-            f"Validation Macro PR-AUC: {val_metrics['val_macro_pr_auc']:.8f} | Macro ROC-AUC: {val_metrics['val_macro_roc_auc']:.8f}"
+        training_loader = DataLoader(
+            train_dataset,
+            batch_size=params["batch_size"],
+            shuffle=True,
+            num_workers=config.num_processes,
+            pin_memory=False,
         )
 
-        # 3. Log all metrics to MLflow
-        mlflow.log_metrics(val_metrics, step=epoch)
+        # Download and setup validation data
+        print("Preparing validation dataset...")
+        dl.main(split="val")
+        val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
+        val_dataset = MusicDataset(
+            split="val",
+            base_dir=val_dir,
+            tag2idx=tag2idx,
+            chunk_length_prefix=config.melspec_chunk_length,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=params["batch_size"],
+            shuffle=False,  # No need to shuffle validation data
+            num_workers=config.num_processes,
+            pin_memory=False,
+        )
 
-        # 4. Update local history arrays
-        val_loss_avg_history.append(val_metrics["val_loss_avg"])
-        val_loss_std_history.append(val_metrics["val_loss_std"])
-        val_macro_pr_auc_history.append(val_metrics["val_macro_pr_auc"])
-        val_macro_roc_auc_history.append(val_metrics["val_macro_roc_auc"])
+        frontend = Frontend(config=config)
 
-        # 5. Checkpoint best model even if all epochs have not been done
-        current_pr_auc = val_metrics["val_macro_pr_auc"]
+        # Dummy tensor to dynamically get frontend output shape
+        dummy_input = torch.zeros(1, config.melspec_time_step, N_MEL_BANDS)
+        frontend_out = frontend(dummy_input)
 
-        # If it's the first epoch, no need to checkpoint the model
-        if len(val_macro_pr_auc_history) == 1 and current_pr_auc > max(
-            val_macro_pr_auc_history[:-1]
-        ):
-            best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
-            mlflow.pytorch.log_model(model, best_model_name)
-            print(f"New best model found and logged to MLFlow: ({best_model_name})")
+        if params["backend_type"] == "CNN":
+            backend = CNNBackend(input_shape=frontend_out.shape)
+            backend_out_features = CNN_N_FILTERS * 2
+        elif params["backend_type"] == "GRU":
+            backend = GRUBackend(input_shape=frontend_out.shape)
+            backend_out_features = GRU_HIDDEN_SIZE * 2
+        elif params["backend_type"] == "ATTN":
+            backend = AttentionBackend(
+                input_shape=frontend_out.shape,
+                project=True,
+                d_model=ATTN_LIN_PROJ,
+                n_heads=ATTN_N_HEADS,
+            )
+            backend_out_features = ATTN_LIN_PROJ * 2
 
-        # 6. Checkpoint latest model
-        if epoch == epochs - 1:
-            latest_model_name = f"{params['backend_type']}_model_latest_epoch_{epoch}"
-            mlflow.pytorch.log_model(model, latest_model_name)
+        classifier = Classifier(
+            in_features=backend_out_features,
+            hidden_units=HIDDEN_UNITS,
+            out_features=num_classes,
+        )
+
+        model = MusicModel(frontend, backend, classifier).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+
+        # Local history array
+        val_loss_avg_history = []
+        val_loss_std_history = []
+        val_macro_pr_auc_history = []
+        val_macro_roc_auc_history = []
+
+        # Epoch loop
+        epochs = params["epochs"]
+
+        for epoch in range(epochs):
+            print(f"\n>>>Starting Epoch {epoch+1}/{epochs}")
+
+            # 1. Train
+            train_avg_loss = _train_one_epoch(
+                config=config,
+                model=model,
+                training_loader=training_loader,
+                optimizer=optimizer,
+                device=device,
+                epoch=epoch,
+            )
+            print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {train_avg_loss:.8f}")
+            mlflow.log_metric("train_loss", train_avg_loss, step=epoch)
+
+            # 2. Validate
+            print("Running validation inference...")
+            val_metrics = _validate_model(
+                config=config,
+                model=model,
+                val_loader=val_loader,
+                device=device,
+                vocab=vocab,
+            )
             print(
-                f"Latest training phase complete and logged to MLFlow: ({latest_model_name})"
+                f"Validation Macro PR-AUC: {val_metrics['val_macro_pr_auc']:.8f} | Macro ROC-AUC: {val_metrics['val_macro_roc_auc']:.8f}"
             )
 
-    print("\nTraining run complete!")
-    print(">>> Stats dump:")
-    print("\nAverage loss at each epoch:\n", val_loss_avg_history)
-    print("\nStdev loss at each epoch:\n", val_loss_std_history)
-    print("\nMacro PR-AUC at each epoch:\n", val_macro_pr_auc_history)
-    print("\nMacro ROC-AUC at each epoch:\n", val_macro_roc_auc_history)
+            # 3. Log all metrics to MLflow
+            mlflow.log_metrics(val_metrics, step=epoch)
+
+            # 4. Update local history arrays
+            val_loss_avg_history.append(val_metrics["val_loss_avg"])
+            val_loss_std_history.append(val_metrics["val_loss_std"])
+            val_macro_pr_auc_history.append(val_metrics["val_macro_pr_auc"])
+            val_macro_roc_auc_history.append(val_metrics["val_macro_roc_auc"])
+
+            # 5. Checkpoint best model even if all epochs have not been done
+            current_pr_auc = val_metrics["val_macro_pr_auc"]
+
+            # If it's the first epoch, no need to checkpoint the model
+            if len(val_macro_pr_auc_history) == 1 and current_pr_auc > max(
+                val_macro_pr_auc_history[:-1]
+            ):
+                best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
+                mlflow.pytorch.log_model(model, best_model_name)
+                print(f"New best model found and logged to MLFlow: ({best_model_name})")
+
+            # 6. Checkpoint latest model
+            if epoch == epochs - 1:
+                latest_model_name = (
+                    f"{params['backend_type']}_model_latest_epoch_{epoch}"
+                )
+                mlflow.pytorch.log_model(model, latest_model_name)
+                print(
+                    f"Latest training phase complete and logged to MLFlow: ({latest_model_name})"
+                )
+
+        print("\nTraining run complete!")
+        print(">>> Stats dump:")
+        print("\nAverage loss at each epoch:\n", val_loss_avg_history)
+        print("\nStdev loss at each epoch:\n", val_loss_std_history)
+        print("\nMacro PR-AUC at each epoch:\n", val_macro_pr_auc_history)
+        print("\nMacro ROC-AUC at each epoch:\n", val_macro_roc_auc_history)
 
 
 # region Validation
