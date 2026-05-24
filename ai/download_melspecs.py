@@ -175,7 +175,7 @@ def extract_remote_melspecs(subfolder, melspec_chunk_length, split):
         print(f"Failed to remove original remote tar at {tar_loc}")
 
 
-def main():
+def main(split: str = "train"):
     (
         melspec_remote,
         melspec_storage,
@@ -192,7 +192,7 @@ def main():
         sys_prepare(
             subfolder=subfolder,
             melspec_chunk_length=melspec_chunk_length,
-            split="train",
+            split=split,
         )
 
         was_something_downloaded = download_remote_melspecs(
@@ -200,14 +200,14 @@ def main():
             melspec_storage=melspec_storage,
             subfolder=subfolder,
             melspec_chunk_length=melspec_chunk_length,
-            split="train",
+            split=split,
         )
 
         if was_something_downloaded:
             extract_remote_melspecs(
                 subfolder=subfolder,
                 melspec_chunk_length=melspec_chunk_length,
-                split="train",
+                split=split,
             )
 
 

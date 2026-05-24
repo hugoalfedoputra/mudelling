@@ -12,6 +12,7 @@ import download_melspecs as dl
 import mlflow
 import mlflow.pytorch
 from sklearn.model_selection import ParameterGrid
+from sklearn.metrics import roc_auc_score, average_precision_score
 from pathlib import Path
 from torchinfo import summary
 from dotenv import load_dotenv
@@ -54,6 +55,17 @@ LOCAL_MANIFEST_FOLDER = "manifest"
 LOCAL_ARCHIVE_FOLDER = "archive"
 LOCAL_RAW_FOLDER = "raw"
 
+TUNING_PARAM_GRID = {
+    # "backend_type": ["CNN", "GRU", "ATTN"],
+    "backend_type": ["ATTN"],
+    "batch_size": [32],
+    "epochs": [3],
+    "learning_rate": [1e-2, 5e-3, 1e-3],
+    # "cnn_dropout": [0.0, 0.25, 0.5],
+    # "gru_clipping": [0.3, 0.5, 1.0],
+    # "attn_n_heads": [2, 4, 8],
+}
+
 
 # region Global helpers
 @dataclass
@@ -64,6 +76,7 @@ class TrainingConfig:
     melspec_time_step: int
     start_subfolder: int
     end_subfolder: int
+    num_processes: int
     torch_backends_cudnn_enabled: bool
     torch_backends_cudnn_benchmark: bool
     mlflow_username: str
@@ -108,6 +121,7 @@ def load_config():
             os.environ["START_SUBFOLDER"] != "",
             os.environ["END_SUBFOLDER"] != "",
             os.environ["MELSPEC_PREFIX_INDEX"] != "",
+            os.environ["NUM_PROCESSES"] != "",
             os.environ["TORCH_BACKEND_CUDNN_ENABLED"] != "",
             os.environ["TORCH_BACKEND_CUDNN_BENCHMARK"] != "",
             os.environ["MLFLOW_TRACKING_USERNAME"] != "",
@@ -125,6 +139,7 @@ def load_config():
         end_subfolder = int(os.environ["END_SUBFOLDER"])
         melspec_chunk_length = MELSPEC_PREFIXES[int(os.environ["MELSPEC_PREFIX_INDEX"])]
         melspec_time_step = N_MELSPEC_LENGTHS[int(os.environ["MELSPEC_PREFIX_INDEX"])]
+        num_processes = int(os.environ["NUM_PROCESSES"])
         torch_backend_cudnn_enabled = (
             os.environ["TORCH_BACKEND_CUDNN_ENABLED"].lower() == "true"
         )
@@ -149,6 +164,7 @@ def load_config():
         melspec_time_step=melspec_time_step,
         start_subfolder=start_subfolder,
         end_subfolder=end_subfolder,
+        num_processes=num_processes,
         torch_backends_cudnn_enabled=torch_backend_cudnn_enabled,
         torch_backends_cudnn_benchmark=torch_backend_cudnn_benchmark,
         mlflow_username=mlflow_username,
@@ -360,19 +376,10 @@ class PositionalEncoding1D(nn.Module):
         channels = int(np.ceil(channels / 2) * 2)
         self.channels = channels
 
-        self.inv_freq = 1.0 / (
-            10000 ** (torch.arange(0, channels, 2).float() / channels)
-        )
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
 
-        try:
-            self.register_buffer("inv_freq", self.inv_freq)
-        except Exception as e:
-            print(e.args)
-
-        try:
-            self.register_buffer("cached_penc", None, persistent=False)
-        except Exception as e:
-            print(e.args)
+        self.register_buffer("inv_freq", inv_freq)
+        self.register_buffer("cached_penc", None, persistent=False)
 
         self.dtype_override = dtype_override
 
@@ -384,7 +391,7 @@ class PositionalEncoding1D(nn.Module):
 
         self.cached_penc = None
         batch_size, x, orig_ch = tensor.shape
-        pos_x = torch.arange(x, device=tensor.device, dtype=self.inv_freq.dtype)
+        pos_x = torch.arange(x, device=tensor.device, dtype=self.inv_freq.dtype)  # type: ignore
         sin_inp_x = torch.einsum("i,j->ij", pos_x, self.inv_freq)
         emb_x = get_emb(sin_inp_x)
         emb = torch.zeros(
@@ -429,7 +436,9 @@ class Frontend(nn.Module):
     Converted to PyTorch.
 
     - 'num_filt': multiplicative factor that controls the number of filters for every filter shape.
-    The paper's source code uses 16 (see: footnote no.5 and 6 on p.4 Pons et al., 2018).
+    The paper's source code uses 16 (see: footnote no. 5 and 6 on p.4 Pons et al., 2018).
+    - After the frontend, the output is reshaped to be exactly like the TensorFlow source code. This may
+    not be needed in PyTorch as it's redundant but I haven't gotten around rewriting it
 
     Some differences:
     - Uses He's normal initialisation, which is different than the truncated normal VarianceScaling
@@ -477,7 +486,7 @@ class Frontend(nn.Module):
         )
         self.bn_conv3 = nn.BatchNorm2d(num_filt * 4)
 
-        # [TIMBRE] filter shape 4: 7x0.4f
+        # [TIMBRE] filter shape 4: 7x0.8f
         self.conv4 = nn.Conv2d(
             in_channels=1,
             out_channels=num_filt,
@@ -486,7 +495,7 @@ class Frontend(nn.Module):
         )
         self.bn_conv4 = nn.BatchNorm2d(num_filt)
 
-        # [TIMBRE] filter shape 5: 3x0.4f
+        # [TIMBRE] filter shape 5: 3x0.8f
         self.conv5 = nn.Conv2d(
             in_channels=1,
             out_channels=num_filt * 2,
@@ -495,7 +504,7 @@ class Frontend(nn.Module):
         )
         self.bn_conv5 = nn.BatchNorm2d(num_filt * 2)
 
-        # [TIMBRE] filter shape 6: 1x0.4f
+        # [TIMBRE] filter shape 6: 1x0.8f
         self.conv6 = nn.Conv2d(
             in_channels=1,
             out_channels=num_filt * 4,
@@ -539,9 +548,10 @@ class Frontend(nn.Module):
 
     def forward(self, x):
         """
-        - 'x': Input tensor. Expected shape in TF was [Batch, Time, Freq].
-               PyTorch will treat this as [Batch, 1, Time, Freq].
-        - 'is_training': In PyTorch, uses model.train() or model.eval() instead of passing a boolean.
+        - 'x': Input tensor. Expected shape in TF was [Batch, Time, Freq]. PyTorch will treat this as
+        [Batch, 1, Time, Freq].
+        - 'is_training': PyTorch uses model.train() or model.eval() instead of passing a boolean so this
+        is not needed anymore.
         """
 
         # input_layer = tf.expand_dims(x, 3) -> [Batch, Time, Freq, 1]
@@ -578,13 +588,13 @@ class Frontend(nn.Module):
         # [TIMBRE] filter shape 3: 1x0.9f
         p3 = run_2d_branch(self.conv3, self.bn_conv3, input_layer)
 
-        # [TIMBRE] filter shape 4: 7x0.4f
+        # [TIMBRE] filter shape 4: 7x0.8f
         p4 = run_2d_branch(self.conv4, self.bn_conv4, input_layer)
 
-        # [TIMBRE] filter shape 5: 3x0.4f
+        # [TIMBRE] filter shape 5: 3x0.8f
         p5 = run_2d_branch(self.conv5, self.bn_conv5, input_layer)
 
-        # [TIMBRE] filter shape 6: 1x0.4f
+        # [TIMBRE] filter shape 6: 1x0.8f
         p6 = run_2d_branch(self.conv6, self.bn_conv6, input_layer)
 
         # [TEMPORAL-FEATURES]
@@ -624,10 +634,10 @@ class Frontend(nn.Module):
         # Concatenate on dim 1 (Channels)
         pool = torch.cat([p1, p2, p3, p4, p5, p6, out7, out8, out9, out10], dim=1)
 
-        # Return format
+        # TODO: Return format still matches with TensorFlow, maybe make it native to PyTorch later
         # TF: return tf.expand_dims(pool, 3) -> [B, T, C, 1]
         # PyTorch: pool is [B, C, T].
-        # To strictly match the requested TF shape logic:
+        # To strictly match TF shape logic:
         # [B, C, T] -> permute to [B, T, C] -> unsqueeze to [B, T, C, 1]
         return pool.permute(0, 2, 1).unsqueeze(3)
 
@@ -981,58 +991,69 @@ class MusicDataset(Dataset):
 
 # region Training
 # endregion
-def train_model(
+def _train_one_epoch(
     config: TrainingConfig,
     model: MusicModel,
     training_loader: DataLoader,
     optimizer: optim.Adam,
     device,
-    epochs=1,
+    epoch: int,
+    bour_loss=True,
+    criterion=None,
 ):
     """Custom criterion/loss using Bour's (2021) as implemented in `bour_weighted_bce_loss(outputs, labels)` in this file."""
 
     model.train()
 
-    for epoch in range(epochs):
-        running_loss = 0.0
+    running_loss = 0.0
+    running_losses = []
 
-        len_training_loader = len(training_loader)
+    len_training_loader = len(training_loader)
 
-        for batch_idx, (melspecs, labels) in enumerate(training_loader):
-            print(f"Training batch {batch_idx}/{len_training_loader}. Epoch: {epoch}")
-            start_time = time.time()
+    for batch_idx, (melspecs, labels) in enumerate(training_loader):
+        print(f"Training batch {batch_idx}/{len_training_loader}. Epoch: {epoch}")
+        start_time = time.time()
 
-            melspecs = melspecs.to(device)
-            labels = labels.to(device)
+        melspecs = melspecs.to(device)
+        labels = labels.to(device)
 
-            # Zero gradients
-            optimizer.zero_grad()
+        # Zero gradients
+        optimizer.zero_grad()
 
-            # Forward pass
-            outputs = model(melspecs)
+        # Forward pass
+        outputs = model(melspecs)
 
-            # Compute loss
+        # Compute loss
+        if bour_loss:
             loss = bour_weighted_bce_loss(
                 outputs, labels, p=config.dataset_relative_frequencies
             )
+        elif criterion is not None:
+            loss = criterion(outputs, labels)
+        else:
+            raise Exception(
+                "No criterion or loss function is provided. Set bour_loss=True or provide your own loss function."
+            )
 
-            # Backward pass & optimize
-            loss.backward()
-            optimizer.step()
+        # Backward pass & optimize
+        loss.backward()
+        optimizer.step()
 
-            running_loss += loss.item()
+        running_loss += loss.item()
+        running_losses.append(loss.item())
 
-            # There's no correlation with N_LAYERS but it's so that it isn't a magic number
-            if batch_idx < N_LAYERS:
-                print(
-                    f"Approximate training time per batch: {time.time() - start_time}s"
-                )
+        # There's no correlation between end_subfolder and N_LAYERS but it's so that it isn't a magic number
+        if batch_idx < (config.end_subfolder // N_LAYERS):
+            print(f"Approximate training time per batch: {time.time() - start_time}s")
 
-        avg_epoch_loss = running_loss / len_training_loader
-        print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_epoch_loss:.4f}")
+        print(f"current_batch_loss: {loss.item()}")
 
-        # Log epoch-level metrics to MLflow
-        mlflow.log_metric("train_loss", avg_epoch_loss, step=epoch)
+    avg_epoch_loss = running_loss / len_training_loader
+    print(f"Epoch [{epoch} - Avg loss: {avg_epoch_loss:.8f}")
+
+    # Log epoch-level metrics to MLflow
+    mlflow.log_metric("avg_train_loss", avg_epoch_loss, step=epoch)
+    mlflow.log_metric("stdev_train_loss", float(np.std(running_losses)), step=epoch)
 
     return avg_epoch_loss
 
@@ -1052,17 +1073,17 @@ def run_hyperparameter_search(config: TrainingConfig):
         chunk_length_prefix=config.melspec_chunk_length,
     )
 
-    param_grid = {
-        "backend_type": ["CNN", "GRU", "ATTN"],
-        "batch_size": [32],
-        "epochs": [3],
-        "learning_rate": [1e-2, 5e-3, 1e-3],
-        # "cnn_dropout": [0.0, 0.25, 0.5],
-        # "gru_clipping": [0.3, 0.5, 1.0],
-        # "attn_n_heads": [2, 4, 8],
-    }
+    print("Preparing validation dataset for Grid Search...")
+    dl.main(split="val")
+    val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
+    val_dataset = MusicDataset(
+        split="val",
+        base_dir=val_dir,
+        tag2idx=tag2idx,
+        chunk_length_prefix=config.melspec_chunk_length,
+    )
 
-    grid = ParameterGrid(param_grid)
+    grid = ParameterGrid(param_grid=TUNING_PARAM_GRID)
     print(f"Starting grid search with {len(grid)} total combinations.")
 
     mlflow.set_experiment(
@@ -1074,18 +1095,24 @@ def run_hyperparameter_search(config: TrainingConfig):
         print(f"Parameters: {params}")
 
         with mlflow.start_run(run_name=f"grid_search_run_{idx}"):
-            # Log hyperparameters to MLflow
             mlflow.log_params(params)
 
             training_loader = DataLoader(
                 train_dataset,
                 batch_size=params["batch_size"],
                 shuffle=True,
-                num_workers=2,
+                num_workers=config.num_processes,
                 pin_memory=False,
             )
 
-            # Build the Model based on params
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=params["batch_size"],
+                shuffle=False,
+                num_workers=config.num_processes,
+                pin_memory=False,
+            )
+
             frontend = Frontend(config=config)
 
             # Dummy tensor to dynamically get frontend output shape
@@ -1116,26 +1143,271 @@ def run_hyperparameter_search(config: TrainingConfig):
             )
 
             model = MusicModel(frontend, backend, classifier).to(device)
-
             optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
-            final_loss = train_model(
-                config=config,
-                model=model,
-                training_loader=training_loader,
-                optimizer=optimizer,
-                device=device,
-                epochs=params["epochs"],
+            val_macro_pr_auc_history = []
+            epochs = params["epochs"]
+
+            for epoch in range(epochs):
+                print(f"\n>>> Starting Epoch {epoch+1}/{epochs}")
+
+                # 1. Train one epoch
+                _ = _train_one_epoch(
+                    config=config,
+                    model=model,
+                    training_loader=training_loader,
+                    optimizer=optimizer,
+                    device=device,
+                    epoch=epoch,
+                    bour_loss=True,
+                )
+
+                # 2. Validate after epoch
+                print("Running validation inference...")
+                val_metrics = _validate_model(
+                    config=config,
+                    model=model,
+                    val_loader=val_loader,
+                    device=device,
+                    vocab=vocab,
+                )
+
+                print(
+                    f"Epoch {epoch} | Val PR-AUC: {val_metrics['val_macro_pr_auc']:.8f} | Val ROC-AUC: {val_metrics['val_macro_roc_auc']:.8f}"
+                )
+
+                # Log metrics to MLflow
+                mlflow.log_metrics(val_metrics, step=epoch)
+
+                current_pr_auc = val_metrics["val_macro_pr_auc"]
+                val_macro_pr_auc_history.append(current_pr_auc)
+
+            # 4. Save the latest model for this run once all epochs finish
+            mlflow.pytorch.log_model(model, "model_weights_latest")
+            print(
+                f"Run {idx+1} completed. Best PR-AUC: {max(val_macro_pr_auc_history):.8f}"
             )
 
-            # Save PyTorch model as artifact to MLflow
-            mlflow.pytorch.log_model(model, "model_weights")
 
-            print(f"Run {idx+1} completed with final loss: {final_loss:.4f}")
+def run_training(config: TrainingConfig, json_config_path: str):
+    params: dict = {}
+
+    with open(json_config_path, "r") as f:
+        params = json.loads(f.read())
+
+    experiment_name = (
+        f"{config.melspec_chunk_length}_chunk_music_model_{params['backend_type']}"
+    )
+    mlflow.set_experiment(experiment_name)
+    mlflow.log_params(params)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+
+    tag2idx, vocab = build_vocabulary(config.training_metadata_path)
+    num_classes = len(vocab)
+
+    train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
+    train_dataset = MusicDataset(
+        split="train",
+        base_dir=train_dir,
+        tag2idx=tag2idx,
+        chunk_length_prefix=config.melspec_chunk_length,
+    )
+    training_loader = DataLoader(
+        train_dataset,
+        batch_size=params["batch_size"],
+        shuffle=True,
+        num_workers=config.num_processes,
+        pin_memory=False,
+    )
+
+    # Download and setup validation data
+    print("Preparing validation dataset...")
+    dl.main(split="val")
+    val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
+    val_dataset = MusicDataset(
+        split="val",
+        base_dir=val_dir,
+        tag2idx=tag2idx,
+        chunk_length_prefix=config.melspec_chunk_length,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=params["batch_size"],
+        shuffle=False,  # No need to shuffle validation data
+        num_workers=config.num_processes,
+        pin_memory=False,
+    )
+
+    frontend = Frontend(config=config)
+
+    # Dummy tensor to dynamically get frontend output shape
+    dummy_input = torch.zeros(1, config.melspec_time_step, N_MEL_BANDS)
+    frontend_out = frontend(dummy_input)
+
+    if params["backend_type"] == "CNN":
+        backend = CNNBackend(input_shape=frontend_out.shape)
+        backend_out_features = CNN_N_FILTERS * 2
+    elif params["backend_type"] == "GRU":
+        backend = GRUBackend(input_shape=frontend_out.shape)
+        backend_out_features = GRU_HIDDEN_SIZE * 2
+    elif params["backend_type"] == "ATTN":
+        backend = AttentionBackend(
+            input_shape=frontend_out.shape,
+            project=True,
+            d_model=ATTN_LIN_PROJ,
+            n_heads=ATTN_N_HEADS,
+        )
+        backend_out_features = ATTN_LIN_PROJ * 2
+
+    classifier = Classifier(
+        in_features=backend_out_features,
+        hidden_units=HIDDEN_UNITS,
+        out_features=num_classes,
+    )
+
+    model = MusicModel(frontend, backend, classifier).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+
+    # Local history array
+    val_loss_avg_history = []
+    val_loss_std_history = []
+    val_macro_pr_auc_history = []
+    val_macro_roc_auc_history = []
+
+    # Epoch loop
+    epochs = params["epochs"]
+
+    for epoch in range(epochs):
+        print(f"\n>>>Starting Epoch {epoch+1}/{epochs}")
+
+        # 1. Train
+        train_avg_loss = _train_one_epoch(
+            config=config,
+            model=model,
+            training_loader=training_loader,
+            optimizer=optimizer,
+            device=device,
+            epoch=epoch,
+        )
+        print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {train_avg_loss:.8f}")
+        mlflow.log_metric("train_loss", train_avg_loss, step=epoch)
+
+        # 2. Validate
+        print("Running validation inference...")
+        val_metrics = _validate_model(
+            config=config,
+            model=model,
+            val_loader=val_loader,
+            device=device,
+            vocab=vocab,
+        )
+        print(
+            f"Validation Macro PR-AUC: {val_metrics['val_macro_pr_auc']:.8f} | Macro ROC-AUC: {val_metrics['val_macro_roc_auc']:.8f}"
+        )
+
+        # 3. Log all metrics to MLflow
+        mlflow.log_metrics(val_metrics, step=epoch)
+
+        # 4. Update local history arrays
+        val_loss_avg_history.append(val_metrics["val_loss_avg"])
+        val_loss_std_history.append(val_metrics["val_loss_std"])
+        val_macro_pr_auc_history.append(val_metrics["val_macro_pr_auc"])
+        val_macro_roc_auc_history.append(val_metrics["val_macro_roc_auc"])
+
+        # 5. Checkpoint best model even if all epochs have not been done
+        current_pr_auc = val_metrics["val_macro_pr_auc"]
+
+        # If it's the first epoch, no need to checkpoint the model
+        if len(val_macro_pr_auc_history) == 1 and current_pr_auc > max(
+            val_macro_pr_auc_history[:-1]
+        ):
+            best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
+            mlflow.pytorch.log_model(model, best_model_name)
+            print(f"New best model found and logged to MLFlow: ({best_model_name})")
+
+        # 6. Checkpoint latest model
+        if epoch == epochs - 1:
+            latest_model_name = f"{params['backend_type']}_model_latest_epoch_{epoch}"
+            mlflow.pytorch.log_model(model, latest_model_name)
+            print(
+                f"Latest training phase complete and logged to MLFlow: ({latest_model_name})"
+            )
+
+    print("\nTraining run complete!")
+    print(">>> Stats dump:")
+    print("\nAverage loss at each epoch:\n", val_loss_avg_history)
+    print("\nStdev loss at each epoch:\n", val_loss_std_history)
+    print("\nMacro PR-AUC at each epoch:\n", val_macro_pr_auc_history)
+    print("\nMacro ROC-AUC at each epoch:\n", val_macro_roc_auc_history)
 
 
 # region Validation
 # endregion
+def _validate_model(
+    config: TrainingConfig,
+    model: MusicModel,
+    val_loader: DataLoader,
+    device,
+    vocab: list,
+):
+    model.eval()
+    all_outputs = []
+    all_labels = []
+    batch_losses = []
+
+    with torch.no_grad():
+        for melspecs, labels in val_loader:
+            melspecs = melspecs.to(device)
+            labels = labels.to(device)
+
+            outputs = model(melspecs)
+            loss = bour_weighted_bce_loss(
+                outputs, labels, p=config.dataset_relative_frequencies
+            )
+
+            batch_losses.append(loss.item())
+
+            # Move outputs to CPU because eval metric calculations use sklearn
+            all_outputs.append(outputs.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
+
+    # Stack all batches into single numpy arrays: shape [total_samples, 56]
+    all_outputs = np.vstack(all_outputs)
+    all_labels = np.vstack(all_labels)
+
+    val_loss_avg = float(np.mean(batch_losses))
+    val_loss_std = float(np.std(batch_losses))
+
+    metrics = {"val_loss_avg": val_loss_avg, "val_loss_std": val_loss_std}
+
+    pr_aucs = []
+    roc_aucs = []
+
+    # Calculate PR-AUC and ROC-AUC per label (OvR)
+    for i, label_name in enumerate(vocab):
+        y_true = all_labels[:, i]
+        y_score = all_outputs[:, i]
+
+        if len(np.unique(y_true)) > 1:
+            pr_auc = average_precision_score(y_true, y_score)
+            roc_auc = roc_auc_score(y_true, y_score)
+        else:
+            # Handle edge cases where a rare label might not exist in the validation split
+            pr_auc = 0.0  # PR baseline
+            roc_auc = 0.5  # Random guessing baseline
+
+        metrics[f"val_pr_auc_{label_name}"] = float(pr_auc)
+        metrics[f"val_roc_auc_{label_name}"] = float(roc_auc)
+        pr_aucs.append(pr_auc)
+        roc_aucs.append(roc_auc)
+
+    # Calculate macro averages
+    metrics["val_macro_pr_auc"] = float(np.mean(pr_aucs))
+    metrics["val_macro_roc_auc"] = float(np.mean(roc_aucs))
+
+    return metrics
 
 
 # region Testing
@@ -1154,7 +1426,9 @@ def main():
 
     # dummy_run(config=config)
 
-    run_hyperparameter_search(config=config)
+    # run_hyperparameter_search(config=config)
+
+    run_training(config=config, json_config_path="./params.json")
 
 
 if __name__ == "__main__":
