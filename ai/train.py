@@ -5,11 +5,13 @@ import json
 import traceback
 import time
 import torch
+import typing
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import download_melspecs as dl
 import mlflow
+import mlflow.artifacts
 import mlflow.pytorch
 from sklearn.model_selection import ParameterGrid
 from sklearn.metrics import roc_auc_score, average_precision_score
@@ -50,10 +52,12 @@ N_MELSPEC_LENGTHS: list[int] = [
 ]  # Melspec output lengths (for these globals; hardcoded)
 MELSPEC_DIR_PREFIX = "melspec"
 
-LOCAL_TEMP_FOLDER = "./temp"
-LOCAL_MANIFEST_FOLDER = "manifest"
-LOCAL_ARCHIVE_FOLDER = "archive"
-LOCAL_RAW_FOLDER = "raw"
+LOCAL_TEMP_FOLDER = dl.LOCAL_TEMP_FOLDER
+LOCAL_MANIFEST_FOLDER = dl.LOCAL_MANIFEST_FOLDER
+LOCAL_ARCHIVE_FOLDER = dl.LOCAL_ARCHIVE_FOLDER
+LOCAL_RAW_FOLDER = dl.LOCAL_RAW_FOLDER
+LOCAL_MODEL_FOLDER = "model"
+LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
     # "backend_type": ["CNN", "GRU", "ATTN"],
@@ -84,7 +88,23 @@ class TrainingConfig:
     mlflow_tracking_uri: str
     training_metadata_path: str
     dataset_relative_frequencies: np.ndarray
+    run_id: str
     setup_params: dict
+
+
+def sys_prepare():
+    model_download_path = f"{LOCAL_TEMP_FOLDER}/{LOCAL_MODEL_FOLDER}"
+
+    checkpoint_download_path = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
+
+    if not os.path.exists(LOCAL_TEMP_FOLDER):
+        os.mkdir(LOCAL_TEMP_FOLDER)
+
+    if not os.path.exists(model_download_path):
+        os.makedirs(model_download_path)
+
+    if not os.path.exists(checkpoint_download_path):
+        os.makedirs(checkpoint_download_path)
 
 
 def _calculate_dataset_relative_frequencies(training_metadata_path) -> np.ndarray:
@@ -128,6 +148,7 @@ def load_config():
             os.environ["MLFLOW_TRACKING_PASSWORD"] != "",
             os.environ["MLFLOW_TRACKING_URI"] != "",
             os.environ["TRAINING_METADATA_CSV"] != "",
+            os.environ["RUN_ID"] != "",
         ]
     ):
         raise Exception("One or more variables in the .env file is empty.")
@@ -153,6 +174,7 @@ def load_config():
         dataset_relative_frequencies = _calculate_dataset_relative_frequencies(
             training_metadata_path=training_metadata_path
         )
+        run_id = os.environ["RUN_ID"]
     except KeyError as e:
         traceback.print_exc()
         raise Exception(f"Missing env var: {e.args[0]}")
@@ -172,6 +194,7 @@ def load_config():
         mlflow_tracking_uri=mlflow_tracking_uri,
         training_metadata_path=training_metadata_path,
         dataset_relative_frequencies=dataset_relative_frequencies,
+        run_id=run_id,
         setup_params={"yInput": 96},
     )
 
@@ -1143,6 +1166,7 @@ def run_hyperparameter_search(config: TrainingConfig):
             )
 
             model = MusicModel(frontend, backend, classifier).to(device)
+
             optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
             val_macro_pr_auc_history = []
@@ -1189,7 +1213,9 @@ def run_hyperparameter_search(config: TrainingConfig):
             )
 
 
-def run_training(config: TrainingConfig, json_config_path: str):
+def run_training(
+    config: TrainingConfig, json_config_path: str, resume_checkpoint=typing.Any | None
+):
     params: dict = {}
 
     with open(json_config_path, "r") as f:
@@ -1200,8 +1226,13 @@ def run_training(config: TrainingConfig, json_config_path: str):
     )
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name=f"{params['backend_type']}_{int(time.time())}"):
+    run_type = "retrain" if resume_checkpoint is not None else "train"
+    dynamic_run_name = f"{run_type}_{params['backend_type']}_{int(time.time())}"
+
+    with mlflow.start_run(run_name=dynamic_run_name):
         mlflow.log_params(params)
+
+        mlflow.set_tag("is_retrain", resume_checkpoint is not None)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Training on: {device}")
@@ -1242,35 +1273,42 @@ def run_training(config: TrainingConfig, json_config_path: str):
             pin_memory=False,
         )
 
-        frontend = Frontend(config=config)
+        if resume_checkpoint is None:
+            frontend = Frontend(config=config)
 
-        # Dummy tensor to dynamically get frontend output shape
-        dummy_input = torch.zeros(1, config.melspec_time_step, N_MEL_BANDS)
-        frontend_out = frontend(dummy_input)
+            # Dummy tensor to dynamically get frontend output shape
+            dummy_input = torch.zeros(1, config.melspec_time_step, N_MEL_BANDS)
+            frontend_out = frontend(dummy_input)
 
-        if params["backend_type"] == "CNN":
-            backend = CNNBackend(input_shape=frontend_out.shape)
-            backend_out_features = CNN_N_FILTERS * 2
-        elif params["backend_type"] == "GRU":
-            backend = GRUBackend(input_shape=frontend_out.shape)
-            backend_out_features = GRU_HIDDEN_SIZE * 2
-        elif params["backend_type"] == "ATTN":
-            backend = AttentionBackend(
-                input_shape=frontend_out.shape,
-                project=True,
-                d_model=ATTN_LIN_PROJ,
-                n_heads=ATTN_N_HEADS,
+            if params["backend_type"] == "CNN":
+                backend = CNNBackend(input_shape=frontend_out.shape)
+                backend_out_features = CNN_N_FILTERS * 2
+            elif params["backend_type"] == "GRU":
+                backend = GRUBackend(input_shape=frontend_out.shape)
+                backend_out_features = GRU_HIDDEN_SIZE * 2
+            elif params["backend_type"] == "ATTN":
+                backend = AttentionBackend(
+                    input_shape=frontend_out.shape,
+                    project=True,
+                    d_model=ATTN_LIN_PROJ,
+                    n_heads=ATTN_N_HEADS,
+                )
+                backend_out_features = ATTN_LIN_PROJ * 2
+
+            classifier = Classifier(
+                in_features=backend_out_features,
+                hidden_units=HIDDEN_UNITS,
+                out_features=num_classes,
             )
-            backend_out_features = ATTN_LIN_PROJ * 2
 
-        classifier = Classifier(
-            in_features=backend_out_features,
-            hidden_units=HIDDEN_UNITS,
-            out_features=num_classes,
-        )
+            model = MusicModel(frontend, backend, classifier).to(device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
-        model = MusicModel(frontend, backend, classifier).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
+        if resume_checkpoint is not None:
+            # Type is ignored because torch.load() returns Any :(
+            model.load_state_dict(resume_checkpoint["model_state_dict"])  # type: ignore
+            optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])  # type: ignore
+            print(f"Successfully restored model and optimizer states from prior epoch: {resume_checkpoint.get('epoch', 'Unknown')}")  # type: ignore
 
         # Local history array
         val_loss_avg_history = []
@@ -1318,10 +1356,17 @@ def run_training(config: TrainingConfig, json_config_path: str):
             val_macro_pr_auc_history.append(val_metrics["val_macro_pr_auc"])
             val_macro_roc_auc_history.append(val_metrics["val_macro_roc_auc"])
 
-            # 5. Checkpoint best model even if all epochs have not been done
+            # 5. Checkpoint best model
             current_pr_auc = val_metrics["val_macro_pr_auc"]
 
-            # If it's the first epoch, no need to checkpoint the model
+            # Just in case the model degrades, checkpoint after the first epoch regardless
+            if len(val_macro_pr_auc_history) == 0:
+                best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
+                mlflow.pytorch.log_model(model, best_model_name)
+                print(f"New best model found and logged to MLFlow: ({best_model_name})")
+
+            # Checkpoint based on if the PR-AUC score is maximum against previous epochs
+            # This is the same exact code as the if block above
             if len(val_macro_pr_auc_history) > 1:
                 if current_pr_auc > max(val_macro_pr_auc_history[:-1]):
                     best_model_name = (
@@ -1342,12 +1387,56 @@ def run_training(config: TrainingConfig, json_config_path: str):
                     f"Latest training phase complete and logged to MLFlow: ({latest_model_name})"
                 )
 
+                checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                local_ckpt_path = f"{checkpoint_dir}/resume_checkpoint.pth"
+
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "avg_train_loss": train_avg_loss,
+                        "val_pr_auc": current_pr_auc,
+                    },
+                    local_ckpt_path,
+                )
+
+                # Upload the raw .pth file as an MLflow artifact
+                mlflow.log_artifact(
+                    local_ckpt_path, artifact_path="training_checkpoints"
+                )
+                print(f"Full PyTorch checkpoint saved and uploaded as MLflow artifact!")
+
         print("\nTraining run complete!")
         print(">>> Stats dump:")
         print("\nAverage loss at each epoch:\n", val_loss_avg_history)
         print("\nStdev loss at each epoch:\n", val_loss_std_history)
         print("\nMacro PR-AUC at each epoch:\n", val_macro_pr_auc_history)
         print("\nMacro ROC-AUC at each epoch:\n", val_macro_roc_auc_history)
+
+
+def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_id: str):
+    print(f"Downloading checkpoint artifact from Run ID: {previous_run_id}...")
+
+    # This downloads to a temporary path managed by MLflow/local temp.
+    # From the way this is, there can only be one checkpoint at a time and a new checkpoint
+    # download will override the old one
+    local_checkpoint_path = mlflow.artifacts.download_artifacts(
+        run_id=previous_run_id,
+        artifact_path="training_checkpoints/resume_checkpoint.pth",
+        dst_path=f"{LOCAL_TEMP_FOLDER}/downloaded_checkpoints",
+    )
+
+    print(f"Loading full PyTorch checkpoint from {local_checkpoint_path}...")
+
+    # map_location='cpu' to load to CPU first before being loaded to device in the end so that
+    # PyTorch doesn't "assume" that the model is loaded to the correct device from the getgo
+    checkpoint = torch.load(local_checkpoint_path, map_location="cpu")
+
+    run_training(
+        config=config, json_config_path=json_config_path, resume_checkpoint=checkpoint
+    )
 
 
 # region Validation
@@ -1423,11 +1512,20 @@ def _validate_model(
 
 # region Main
 def main():
+    # =================================================================================
+    #
+    # COMMENT AND UNCOMMENT FUNCTIONS ON THE FLY AS NEEDED
+    # COMMENT AND UNCOMMENT FUNCTIONS ON THE FLY AS NEEDED
+    # COMMENT AND UNCOMMENT FUNCTIONS ON THE FLY AS NEEDED
+    # =================================================================================
+
     config = load_config()
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
 
     check_system(config=config)
+
+    sys_prepare()
 
     download_all_melspecs_first()
 
@@ -1436,6 +1534,12 @@ def main():
     # run_hyperparameter_search(config=config)
 
     run_training(config=config, json_config_path="./params.json")
+
+    # run_retraining(
+    #     config=config,
+    #     json_config_path="./params.json",
+    #     previous_run_id=config.run_id,
+    # )
 
 
 if __name__ == "__main__":
