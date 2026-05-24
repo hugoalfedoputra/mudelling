@@ -1322,12 +1322,15 @@ def run_training(config: TrainingConfig, json_config_path: str):
             current_pr_auc = val_metrics["val_macro_pr_auc"]
 
             # If it's the first epoch, no need to checkpoint the model
-            if len(val_macro_pr_auc_history) == 1 and current_pr_auc > max(
-                val_macro_pr_auc_history[:-1]
-            ):
-                best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
-                mlflow.pytorch.log_model(model, best_model_name)
-                print(f"New best model found and logged to MLFlow: ({best_model_name})")
+            if len(val_macro_pr_auc_history) > 1:
+                if current_pr_auc > max(val_macro_pr_auc_history[:-1]):
+                    best_model_name = (
+                        f"best_{params['backend_type']}_model_epoch_{epoch}"
+                    )
+                    mlflow.pytorch.log_model(model, best_model_name)
+                    print(
+                        f"New best model found and logged to MLFlow: ({best_model_name})"
+                    )
 
             # 6. Checkpoint latest model
             if epoch == epochs - 1:
