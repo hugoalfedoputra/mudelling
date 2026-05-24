@@ -5,4 +5,4 @@ download_logs.txt
 __pycache__
 docker-compose.yml
 training_logs.txt
-training_logs_*.txt
+training_logs*.txt
