@@ -356,11 +356,21 @@ def bour_weighted_bce_loss(outputs: torch.Tensor, labels: torch.Tensor, p: np.nd
     weight_neg = (2.0 * pt) / (1.0 + pt)
 
     # Calculate the two terms of the loss
+    # eps is arbitrarily made equal to reference intensity when calculating power to dB
+    # There's no connection between the two but it mitigates having many "undocumented"
+    # magic numbers.
+    eps = 10e-12
+    outputs_clamped = torch.clamp(outputs, min=eps, max=1.0 - eps)
+
+    # The inputs for the log function has to be clamped too to be between 0 and 1 just
+    # in case the outputs exploded. This value is still going to be used by
     # PyTorch BCELoss clamps log function output to be GTE -100
     # as per docs: https://docs.pytorch.org/docs/2.12/generated/torch.nn.BCELoss.html
-    term1 = weight_pos * labels * torch.clamp(torch.log(outputs), min=-100)
+    term1 = weight_pos * labels * torch.clamp(torch.log(outputs_clamped), min=-100)
     term2 = (
-        weight_neg * (1.0 - labels) * torch.clamp(torch.log(1.0 - outputs), min=-100)
+        weight_neg
+        * (1.0 - labels)
+        * torch.clamp(torch.log(1.0 - outputs_clamped), min=-100)
     )
 
     # Sum over the classes and average over the batch and number of classes

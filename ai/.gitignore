@@ -1,4 +1,5 @@
 ~$*
+.~lock*
 manual-check.*
 melspecs/
 download_logs.txt
