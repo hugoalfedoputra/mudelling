@@ -5,7 +5,6 @@ import json
 import traceback
 import time
 import torch
-import typing
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -1213,9 +1212,7 @@ def run_hyperparameter_search(config: TrainingConfig):
             )
 
 
-def run_training(
-    config: TrainingConfig, json_config_path: str, resume_checkpoint=typing.Any | None
-):
+def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoint=None):
     params: dict = {}
 
     with open(json_config_path, "r") as f:
