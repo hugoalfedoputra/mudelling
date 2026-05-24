@@ -35,7 +35,7 @@ N_MEL_BANDS = 96
 CNN_N_FILTERS = 64
 GRU_HIDDEN_SIZE = 92
 ATTN_LIN_PROJ = 92
-ATTN_N_HEADS = 8
+ATTN_N_HEADS = 4
 N_LAYERS = 3
 HIDDEN_UNITS = 200
 BATCH_SIZE = 32  # Follow TensorFlow's default
@@ -64,6 +64,8 @@ class TrainingConfig:
     melspec_time_step: int
     start_subfolder: int
     end_subfolder: int
+    torch_backends_cudnn_enabled: bool
+    torch_backends_cudnn_benchmark: bool
     mlflow_username: str
     mlflow_password: str
     mlflow_tracking_uri: str
@@ -106,6 +108,8 @@ def load_config():
             os.environ["START_SUBFOLDER"] != "",
             os.environ["END_SUBFOLDER"] != "",
             os.environ["MELSPEC_PREFIX_INDEX"] != "",
+            os.environ["TORCH_BACKEND_CUDNN_ENABLED"] != "",
+            os.environ["TORCH_BACKEND_CUDNN_BENCHMARK"] != "",
             os.environ["MLFLOW_TRACKING_USERNAME"] != "",
             os.environ["MLFLOW_TRACKING_PASSWORD"] != "",
             os.environ["MLFLOW_TRACKING_URI"] != "",
@@ -121,6 +125,12 @@ def load_config():
         end_subfolder = int(os.environ["END_SUBFOLDER"])
         melspec_chunk_length = MELSPEC_PREFIXES[int(os.environ["MELSPEC_PREFIX_INDEX"])]
         melspec_time_step = N_MELSPEC_LENGTHS[int(os.environ["MELSPEC_PREFIX_INDEX"])]
+        torch_backend_cudnn_enabled = (
+            os.environ["TORCH_BACKEND_CUDNN_ENABLED"].lower() == "true"
+        )
+        torch_backend_cudnn_benchmark = (
+            os.environ["TORCH_BACKEND_CUDNN_BENCHMARK"].lower() == "true"
+        )
         mlflow_username = os.environ["MLFLOW_TRACKING_USERNAME"]
         mlflow_password = os.environ["MLFLOW_TRACKING_PASSWORD"]
         mlflow_tracking_uri = os.environ["MLFLOW_TRACKING_URI"]
@@ -139,6 +149,8 @@ def load_config():
         melspec_time_step=melspec_time_step,
         start_subfolder=start_subfolder,
         end_subfolder=end_subfolder,
+        torch_backends_cudnn_enabled=torch_backend_cudnn_enabled,
+        torch_backends_cudnn_benchmark=torch_backend_cudnn_benchmark,
         mlflow_username=mlflow_username,
         mlflow_password=mlflow_password,
         mlflow_tracking_uri=mlflow_tracking_uri,
@@ -148,8 +160,11 @@ def load_config():
     )
 
 
-def check_system():
+def check_system(config: TrainingConfig):
     import torch
+
+    torch.backends.cudnn.enabled = config.torch_backends_cudnn_enabled
+    torch.backends.cudnn.benchmark = config.torch_backends_cudnn_benchmark
 
     # load_dotenv()
 
@@ -1040,7 +1055,7 @@ def run_hyperparameter_search(config: TrainingConfig):
     param_grid = {
         "backend_type": ["CNN", "GRU", "ATTN"],
         "batch_size": [32],
-        "epochs": [1],
+        "epochs": [3],
         "learning_rate": [1e-2, 5e-3, 1e-3],
         # "cnn_dropout": [0.0, 0.25, 0.5],
         # "gru_clipping": [0.3, 0.5, 1.0],
@@ -1066,8 +1081,8 @@ def run_hyperparameter_search(config: TrainingConfig):
                 train_dataset,
                 batch_size=params["batch_size"],
                 shuffle=True,
-                num_workers=4,
-                pin_memory=True,
+                num_workers=2,
+                pin_memory=False,
             )
 
             # Build the Model based on params
@@ -1133,7 +1148,7 @@ def main():
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
 
-    check_system()
+    check_system(config=config)
 
     download_all_melspecs_first()
 
