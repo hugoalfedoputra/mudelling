@@ -59,11 +59,12 @@ LOCAL_MODEL_FOLDER = "model"
 LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
-    # "backend_type": ["CNN", "GRU", "ATTN"],
-    "backend_type": ["ATTN"],
+    "backend_type": ["CNN", "GRU", "ATTN"],
     "batch_size": [32],
-    "epochs": [3],
-    "learning_rate": [1e-2, 5e-3, 1e-3],
+    "epochs": [5],
+    "learning_rate": [1e-3, 1e-4],
+    "classifier_dropout": [0.1, 0.5],
+    "grad_clip_max_norm": [0.3, 1.0],
     # "cnn_dropout": [0.0, 0.25, 0.5],
     # "gru_clipping": [0.3, 0.5, 1.0],
     # "attn_n_heads": [2, 4, 8],
@@ -899,11 +900,15 @@ class AttentionBackend(nn.Module):
 
 # region Classifier
 class Classifier(nn.Module):
-    def __init__(self, in_features=128, hidden_units=200, out_features=56):
+    def __init__(
+        self, in_features=128, hidden_units=200, out_features=56, p_dropout=0.5
+    ):
         super(Classifier, self).__init__()
 
         # 1. First Fully Connected layer
         self.fc1 = nn.Linear(in_features, hidden_units)
+
+        self.dropout1 = nn.Dropout(p=p_dropout)
 
         # 2. Add the missing Batch Normalization layer
         # Use BatchNorm1d because it operates on feature vectors [Batch, Features]
@@ -925,6 +930,8 @@ class Classifier(nn.Module):
         # TF sequence: dense(activation='relu') -> batch_normalization
         x = F.relu(x)
         x = self.bn1(x)
+
+        x = self.dropout1(x)
 
         # Pass through the final output layer
         x = self.out(x)
@@ -980,7 +987,7 @@ def build_vocabulary(csv_path: str):
 
 
 class MusicDataset(Dataset):
-    def __init__(self, split, base_dir, tag2idx, chunk_length_prefix):
+    def __init__(self, base_dir, tag2idx, chunk_length_prefix):
         self.base_dir = Path(base_dir)
         self.tag2idx = tag2idx
         self.num_classes = len(tag2idx)
@@ -1034,6 +1041,7 @@ def _train_one_epoch(
     epoch: int,
     bour_loss=True,
     criterion=None,
+    grad_clip_max_norm=1.0,
 ):
     """Custom criterion/loss using Bour's (2021) as implemented in `bour_weighted_bce_loss(outputs, labels)` in this file."""
 
@@ -1072,9 +1080,7 @@ def _train_one_epoch(
         # Backward pass & optimize
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(
-            model.parameters(), max_norm=GRAD_NORM_CLIPPING_MAX_NORM
-        )
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
 
         optimizer.step()
 
@@ -1111,7 +1117,6 @@ def run_hyperparameter_search(config: TrainingConfig):
 
     train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
     train_dataset = MusicDataset(
-        split="train",
         base_dir=train_dir,
         tag2idx=tag2idx,
         chunk_length_prefix=config.melspec_chunk_length,
@@ -1121,7 +1126,6 @@ def run_hyperparameter_search(config: TrainingConfig):
     dl.main(split="val")
     val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
     val_dataset = MusicDataset(
-        split="val",
         base_dir=val_dir,
         tag2idx=tag2idx,
         chunk_length_prefix=config.melspec_chunk_length,
@@ -1131,7 +1135,7 @@ def run_hyperparameter_search(config: TrainingConfig):
     print(f"Starting grid search with {len(grid)} total combinations.")
 
     mlflow.set_experiment(
-        f"{config.melspec_chunk_length}_chunk_music_model_grid_search"
+        f"v2_{config.melspec_chunk_length}_chunk_music_model_grid_search"
     )
 
     for idx, params in enumerate(grid):
@@ -1184,6 +1188,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                 in_features=backend_out_features,
                 hidden_units=HIDDEN_UNITS,
                 out_features=num_classes,
+                p_dropout=params["classifier_dropout"],
             )
 
             model = MusicModel(frontend, backend, classifier).to(device)
@@ -1205,6 +1210,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     device=device,
                     epoch=epoch,
                     bour_loss=True,
+                    grad_clip_max_norm=params["grad_clip_max_norm"],
                 )
 
                 # 2. Validate after epoch
@@ -1234,7 +1240,9 @@ def run_hyperparameter_search(config: TrainingConfig):
                     # Save locally then save as MLflow artifact
                     checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
                     os.makedirs(checkpoint_dir, exist_ok=True)
-                    local_ckpt_path = f"{checkpoint_dir}/tuning_checkpoint_{epoch}.pth"
+                    local_ckpt_path = (
+                        f"{checkpoint_dir}/tuning_run_{idx}_checkpoint_{epoch}.pth"
+                    )
 
                     torch.save(
                         {
@@ -1255,6 +1263,19 @@ def run_hyperparameter_search(config: TrainingConfig):
                     print(
                         f"Full PyTorch checkpoint saved and uploaded as MLflow artifact!"
                     )
+
+            del (
+                model,
+                optimizer,
+                training_loader,
+                val_loader,
+                frontend,
+                backend,
+                classifier,
+            )
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoint=None):
@@ -1284,7 +1305,6 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
 
         train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
         train_dataset = MusicDataset(
-            split="train",
             base_dir=train_dir,
             tag2idx=tag2idx,
             chunk_length_prefix=config.melspec_chunk_length,
@@ -1302,7 +1322,6 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
         dl.main(split="val")
         val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
         val_dataset = MusicDataset(
-            split="val",
             base_dir=val_dir,
             tag2idx=tag2idx,
             chunk_length_prefix=config.melspec_chunk_length,
@@ -1343,6 +1362,7 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
         )
 
         model = MusicModel(frontend, backend, classifier).to(device)
+
         optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
         if resume_checkpoint is not None:
@@ -1578,9 +1598,9 @@ def main():
 
     # dummy_run(config=config)
 
-    # run_hyperparameter_search(config=config)
+    run_hyperparameter_search(config=config)
 
-    run_training(config=config, json_config_path="./params.json")
+    # run_training(config=config, json_config_path="./params.json")
 
     # run_retraining(
     #     config=config,
