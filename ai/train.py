@@ -69,6 +69,8 @@ TUNING_PARAM_GRID = {
     # "attn_n_heads": [2, 4, 8],
 }
 
+GRAD_NORM_CLIPPING_MAX_NORM = 1.0
+
 
 # region Global helpers
 @dataclass
@@ -1069,6 +1071,11 @@ def _train_one_epoch(
 
         # Backward pass & optimize
         loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(), max_norm=GRAD_NORM_CLIPPING_MAX_NORM
+        )
+
         optimizer.step()
 
         running_loss += loss.item()
@@ -1521,13 +1528,18 @@ def _validate_model(
         y_true = all_labels[:, i]
         y_score = all_outputs[:, i]
 
-        if len(np.unique(y_true)) > 1:
+        # There's been cases where the y_score is NaN and average_precision_score is throwing
+        # ValueError of it receiving an input of NaN
+        if np.isnan(y_score).any():
+            pr_auc = 0.0  # PR baseline
+            roc_auc = 0.5  # Random guessing baseline
+        elif len(np.unique(y_true)) > 1:
             pr_auc = average_precision_score(y_true, y_score)
             roc_auc = roc_auc_score(y_true, y_score)
         else:
             # Handle edge cases where a rare label might not exist in the validation split
-            pr_auc = 0.0  # PR baseline
-            roc_auc = 0.5  # Random guessing baseline
+            pr_auc = 0.0
+            roc_auc = 0.5
 
         metrics[f"val_pr_auc_{label_name}"] = float(pr_auc)
         metrics[f"val_roc_auc_{label_name}"] = float(roc_auc)
