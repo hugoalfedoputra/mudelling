@@ -1,1 +1,7 @@
-# skripsi-code
+# MUdelling
+
+MUdelling (Music-modelling) is an experiment in light of the research done by Pons et al. (2018) titled "End-to-end learning for music audio tagging at scale" (http://arxiv.org/abs/1711.02520) and Emotion and Theme Recognition in Music Task within MediaEval 2019-2021 (https://mtg.github.io/mtg-jamendo-dataset/). MUdelling compares the performance of convolutional, recurrent, and attention architecture as back-ends (as defined by Pons et al.) in the task of emotion and mood multi-label classification. The dataset used for training and evaluating the three back-ends is MTG-Jamendo's subset for mood/theme.
+
+Given the imbalanced dataset, weighted BCE loss is used with the ADAM optimiser. All music files are split to 15 second chunks and are weakly labelled. The preparatory script is in `prep/preprocess.py` while the models are defined in `ai/train.py`. Due to the short timeline of this experiment, the preprocessing script is made to be computed in a distributed and multiprocessed manner. The preprocessed music files are stored in an intermediary object storage server (or a remote file server of your liking as long as it supports `rclone`). Since the three back-ends to be compared are meant to be trained separately, preliminary hyperparameter tuning and training can also be executed on separate devices. Consult `.env.example` for possibilities to set up a cross-platform training and tuning environment. 
+
+This implementation assumes that you have set up MLflow and a remote storage (object or file) that is supported by `rclone`.
