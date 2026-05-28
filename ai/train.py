@@ -769,7 +769,7 @@ class Frontend(nn.Module):
 class CNNBackend(nn.Module):
     def __init__(self, input_shape, p_dropout=0.1):
         super(CNNBackend, self).__init__()
-        # inp_shape from Frontend is [Batch, Time, Channels, 1]
+        # input_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
 
         self.conv1 = nn.Conv2d(
@@ -804,24 +804,24 @@ class CNNBackend(nn.Module):
     def forward(self, x):
         # x shape is [B, T, C, 1] (mimicking TF's NHWC)
         # PyTorch Conv2D expects [B, in_channels, Height, Width]
-        x = x.permute(0, 3, 1, 2)  # -> [B, 1, T, C]
+        x = x.permute(0, 3, 1, 2)  # -> [B, 1, T, 464]
 
         out = F.relu(self.bn_conv1(self.conv1(x)))
-        out = self.dropout1(out)  # [B, CNN_N_FILTERS, T, C]
+        out = self.dropout1(out)  # [B, CNN_N_FILTERS, T, 1]
 
         out = F.relu(self.bn_conv2(self.conv2(out)))
-        out = self.dropout2(out)  # [B, CNN_N_FILTERS, T, C]
+        out = self.dropout2(out)  # [B, CNN_N_FILTERS, T, 1]
 
         # 3. Maxpooling (downsamples time dimension by half)
         # Matches TF's pool_size=[2, 1], strides=[2, 1]
         out = F.max_pool2d(out, kernel_size=(2, 1), stride=(2, 1))
 
         # 4. Third CNN Layer
-        out = F.relu(self.bn_conv3(self.conv3(out)))  # [B, CNN_N_FILTERS, T, C // 2]
+        out = F.relu(self.bn_conv3(self.conv3(out)))  # [B, CNN_N_FILTERS, T // 2, 1]
 
         # 5. Global Pooling prep
         # Squeeze the trailing Width dimension of 1 to perform 1D Adaptive Pooling over time
-        out = out.squeeze(3)  # -> [B, CNN_N_FILTERS, T]
+        out = out.squeeze(3)  # -> [B, CNN_N_FILTERS, T // 2]
 
         out_mean = F.adaptive_avg_pool1d(out, 1).squeeze(2)  # -> [B, CNN_N_FILTERS]
         out_max = F.adaptive_max_pool1d(out, 1).squeeze(2)  # -> [B, CNN_N_FILTERS]
@@ -846,7 +846,7 @@ class GRUBackend(nn.Module):
         is_bidirectional=False,
     ):
         super(GRUBackend, self).__init__()
-        # inp_shape from Frontend is [Batch, Time, Channels, 1]
+        # input_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
 
         if is_bidirectional:
@@ -935,7 +935,7 @@ class AttentionBackend(nn.Module):
         use_rope=False,
     ):
         super(AttentionBackend, self).__init__()
-        # inp_shape from Frontend is[Batch, Time, Channels, 1]
+        # input_shape from Frontend is[Batch, Time, Channels, 1]
         c = input_shape[2]
 
         # Linear Projection:
@@ -1374,7 +1374,9 @@ def run_hyperparameter_search(config: TrainingConfig):
                     # Save locally then save as MLflow artifact
                     checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}"
                     os.makedirs(checkpoint_dir, exist_ok=True)
-                    local_ckpt_path = f"{checkpoint_dir}/{EXPERIMENT_IDENT}/tuning_run_{idx}_checkpoint_{epoch}.pth"
+                    local_ckpt_path = (
+                        f"{checkpoint_dir}/tuning_run_{idx}_checkpoint_{epoch}.pth"
+                    )
 
                     torch.save(
                         {
