@@ -1221,7 +1221,7 @@ def _train_one_epoch(
         print(f"current_batch_loss: {loss.item()}")
 
     avg_epoch_loss = running_loss / len_training_loader
-    print(f"Epoch [{epoch} - Avg loss: {avg_epoch_loss:.8f}")
+    print(f"Epoch {epoch} - Avg loss: {avg_epoch_loss:.8f}")
 
     # Log epoch-level metrics to MLflow
     mlflow.log_metric("avg_train_loss", avg_epoch_loss, step=epoch)
