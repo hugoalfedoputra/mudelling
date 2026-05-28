@@ -7,3 +7,4 @@ __pycache__
 docker-compose.yml
 training_logs.txt
 training_logs*.txt
+train2.py
