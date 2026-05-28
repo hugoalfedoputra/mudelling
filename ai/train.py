@@ -34,21 +34,22 @@ from dataclasses import dataclass
 # =================================================================================================
 N_MEL_BANDS = 96
 
-EXPERIMENT_NAME = "v2ALT_15s_chunk_music_model_grid_search"
+EXPERIMENT_IDENT = "v2ALT_15s"
+EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
 
 N_LAYERS = 3
 
 CNN_N_FILTERS = 64
 
-GRU_HIDDEN_SIZE = 92  # 355936 params
-IS_BIDIRECTIONAL = False
-# GRU_HIDDEN_SIZE = 50  # 348504 params
-# IS_BIDIRECTIONAL = True
+# GRU_HIDDEN_SIZE = 92  # 355936 params
+# IS_BIDIRECTIONAL = False
+GRU_HIDDEN_SIZE = 50  # 348504 params
+IS_BIDIRECTIONAL = True
 
 ATTN_LIN_PROJ = 92
 ATTN_N_HEADS = 4
-USE_ROPE = False
-# USE_ROPE = True
+# USE_ROPE = False
+USE_ROPE = True
 
 HIDDEN_UNITS = 200
 BATCH_SIZE = 32  # Follow TensorFlow's default
@@ -70,9 +71,8 @@ LOCAL_MODEL_FOLDER = "model"
 LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
-    "backend_type": ["CNN", "GRU", "ATTN"],
-    # "backend_type": ["GRU"], # for bidirectional testing
-    # "backend_type": ["ATTN"], # for RoPE testing
+    # "backend_type": ["CNN", "GRU", "ATTN"],
+    "backend_type": ["GRU", "ATTN"], # for bidirectional testing and RoPE testing
     "batch_size": [32],
     "epochs": [5],
     "learning_rate": [1e-2, 1e-3, 1e-4],
@@ -1375,7 +1375,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
                     os.makedirs(checkpoint_dir, exist_ok=True)
                     local_ckpt_path = (
-                        f"{checkpoint_dir}/tuning_run_{idx}_checkpoint_{epoch}.pth"
+                        f"{checkpoint_dir}/{EXPERIMENT_IDENT}/tuning_run_{idx}_checkpoint_{epoch}.pth"
                     )
 
                     torch.save(
@@ -1416,7 +1416,7 @@ def run_hyperparameter_search(config: TrainingConfig):
 
 
 # region Training
-def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoint=None):
+def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoint=None, previous_run_id=None):
     params: dict = {}
 
     with open(json_config_path, "r") as f:
@@ -1587,9 +1587,12 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
                 )
 
                 # Save locally then save as MLflow artifact
-                checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
+                if previous_run_id is None:
+                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}"
+                else:
+                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{previous_run_id}"
                 os.makedirs(checkpoint_dir, exist_ok=True)
-                local_ckpt_path = f"{checkpoint_dir}/resume_checkpoint.pth"
+                local_ckpt_path = f"{checkpoint_dir}/resume_checkpoint.pth"    
 
                 torch.save(
                     {
@@ -1625,17 +1628,17 @@ def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_i
     local_checkpoint_path = mlflow.artifacts.download_artifacts(
         run_id=previous_run_id,
         artifact_path="training_checkpoints/resume_checkpoint.pth",
-        dst_path=f"{LOCAL_TEMP_FOLDER}/downloaded_checkpoints",
+        dst_path=f"{LOCAL_TEMP_FOLDER}/{previous_run_id}/downloaded_checkpoints",
     )
 
-    print(f"Loading full PyTorch checkpoint from {local_checkpoint_path}...")
+    print(f"After download: loading local PyTorch checkpoint from {local_checkpoint_path}...")
 
     # map_location='cpu' to load to CPU first before being loaded to device in the end so that
     # PyTorch doesn't "assume" that the model is loaded to the correct device from the getgo
     checkpoint = torch.load(local_checkpoint_path, map_location="cpu")
 
     run_training(
-        config=config, json_config_path=json_config_path, resume_checkpoint=checkpoint
+        config=config, json_config_path=json_config_path, resume_checkpoint=checkpoint, previous_run_id=previous_run_id
     )
 
 
@@ -1735,13 +1738,13 @@ def main():
 
     check_system(config=config)
 
-    # sys_prepare()
+    sys_prepare()
 
-    # download_all_melspecs_first()
+    download_all_melspecs_first()
 
-    dummy_run(config=config)
+    # dummy_run(config=config)
 
-    # run_hyperparameter_search(config=config)
+    run_hyperparameter_search(config=config)
 
     # run_training(config=config, json_config_path="./params.json")
 
