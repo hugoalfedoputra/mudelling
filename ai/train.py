@@ -72,7 +72,7 @@ LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
     # "backend_type": ["CNN", "GRU", "ATTN"],
-    "backend_type": ["GRU", "ATTN"], # for bidirectional testing and RoPE testing
+    "backend_type": ["GRU", "ATTN"],  # for bidirectional testing and RoPE testing
     "batch_size": [32],
     "epochs": [5],
     "learning_rate": [1e-2, 1e-3, 1e-4],
@@ -1372,12 +1372,9 @@ def run_hyperparameter_search(config: TrainingConfig):
                 is_final_epoch = epoch == epochs - 1
                 if is_multiple_of_10 or is_final_epoch:
                     # Save locally then save as MLflow artifact
-                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}"
+                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}"
                     os.makedirs(checkpoint_dir, exist_ok=True)
-                    local_ckpt_path = (
-                        f"{checkpoint_dir}/{EXPERIMENT_IDENT}/tuning_run_{idx}_checkpoint_{epoch}.pth"
-                    )
-                    os.makedirs(local_ckpt_path, exist_ok=True)
+                    local_ckpt_path = f"{checkpoint_dir}/{EXPERIMENT_IDENT}/tuning_run_{idx}_checkpoint_{epoch}.pth"
 
                     torch.save(
                         {
@@ -1417,7 +1414,12 @@ def run_hyperparameter_search(config: TrainingConfig):
 
 
 # region Training
-def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoint=None, previous_run_id=None):
+def run_training(
+    config: TrainingConfig,
+    json_config_path: str,
+    resume_checkpoint=None,
+    previous_run_id=None,
+):
     params: dict = {}
 
     with open(json_config_path, "r") as f:
@@ -1593,7 +1595,7 @@ def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoin
                 else:
                     checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{previous_run_id}"
                 os.makedirs(checkpoint_dir, exist_ok=True)
-                local_ckpt_path = f"{checkpoint_dir}/resume_checkpoint.pth"    
+                local_ckpt_path = f"{checkpoint_dir}/resume_checkpoint.pth"
 
                 torch.save(
                     {
@@ -1632,14 +1634,19 @@ def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_i
         dst_path=f"{LOCAL_TEMP_FOLDER}/{previous_run_id}/downloaded_checkpoints",
     )
 
-    print(f"After download: loading local PyTorch checkpoint from {local_checkpoint_path}...")
+    print(
+        f"After download: loading local PyTorch checkpoint from {local_checkpoint_path}..."
+    )
 
     # map_location='cpu' to load to CPU first before being loaded to device in the end so that
     # PyTorch doesn't "assume" that the model is loaded to the correct device from the getgo
     checkpoint = torch.load(local_checkpoint_path, map_location="cpu")
 
     run_training(
-        config=config, json_config_path=json_config_path, resume_checkpoint=checkpoint, previous_run_id=previous_run_id
+        config=config,
+        json_config_path=json_config_path,
+        resume_checkpoint=checkpoint,
+        previous_run_id=previous_run_id,
     )
 
 
