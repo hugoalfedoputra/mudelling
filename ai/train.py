@@ -34,6 +34,8 @@ from dataclasses import dataclass
 # =================================================================================================
 N_MEL_BANDS = 96
 
+EXPERIMENT_NAME = "v2ALT_15s_chunk_music_model_grid_search"
+
 N_LAYERS = 3
 
 CNN_N_FILTERS = 64
@@ -45,6 +47,8 @@ IS_BIDIRECTIONAL = False
 
 ATTN_LIN_PROJ = 92
 ATTN_N_HEADS = 4
+USE_ROPE = False
+# USE_ROPE = True
 
 HIDDEN_UNITS = 200
 BATCH_SIZE = 32  # Follow TensorFlow's default
@@ -67,6 +71,8 @@ LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
     "backend_type": ["CNN", "GRU", "ATTN"],
+    # "backend_type": ["GRU"], # for bidirectional testing
+    # "backend_type": ["ATTN"], # for RoPE testing
     "batch_size": [32],
     "epochs": [5],
     "learning_rate": [1e-2, 1e-3, 1e-4],
@@ -474,6 +480,66 @@ class Summer(nn.Module):
         return tensor + penc.to(tensor.device)
 
 
+class RotaryPositionalEmbeddings(nn.Module):
+    """
+    Source: https://github.com/aju22/RoPE-PyTorch/blob/main/RoPE.ipynb
+    """
+
+    def __init__(self, d: int, base: int = 10000):
+        super().__init__()
+        self.base = base
+        self.d = d
+        self.cos_cached = None
+        self.sin_cached = None
+
+    def _build_cache(self, x: torch.Tensor):
+        if self.cos_cached is not None and x.shape[0] <= self.cos_cached.shape[0]:
+            return
+
+        seq_len = x.shape[0]
+
+        theta = 1.0 / (self.base ** (torch.arange(0, self.d, 2).float() / self.d)).to(
+            x.device
+        )  # THETA = 10,000^(-2*i/d) or 1/10,000^(2i/d)
+
+        seq_idx = (
+            torch.arange(seq_len, device=x.device).float().to(x.device)
+        )  # Position Index -> [0,1,2...seq-1]
+
+        idx_theta = torch.einsum(
+            "n,d->nd", seq_idx, theta
+        )  # Calculates m*(THETA) = [ [0, 0...], [THETA_1, THETA_2...THETA_d/2], ... [seq-1*(THETA_1), seq-1*(THETA_2)...] ]
+
+        idx_theta2 = torch.cat(
+            [idx_theta, idx_theta], dim=1
+        )  # [THETA_1, THETA_2...THETA_d/2] -> [THETA_1, THETA_2...THETA_d]
+
+        self.cos_cached = idx_theta2.cos()[
+            :, None, None, :
+        ]  # Cache [cosTHETA_1, cosTHETA_2...cosTHETA_d]
+        self.sin_cached = idx_theta2.sin()[
+            :, None, None, :
+        ]  # cache [sinTHETA_1, sinTHETA_2...sinTHETA_d]
+
+    def _neg_half(self, x: torch.Tensor):
+        d_2 = self.d // 2  #
+
+        return torch.cat(
+            [-x[:, :, :, d_2:], x[:, :, :, :d_2]], dim=-1
+        )  # [x_1, x_2,...x_d] -> [-x_d/2, ... -x_d, x_1, ... x_d/2]
+
+    def forward(self, x: torch.Tensor):
+        self._build_cache(x)
+
+        neg_half_x = self._neg_half(x)
+
+        x_rope = (x * self.cos_cached[: x.shape[0]]) + (  # type: ignore
+            neg_half_x * self.sin_cached[: x.shape[0]]  # type: ignore
+        )  # [x_1*cosTHETA_1 - x_d/2*sinTHETA_d/2, ....]
+
+        return x_rope
+
+
 # endregion
 
 
@@ -866,6 +932,7 @@ class AttentionBackend(nn.Module):
         n_heads=ATTN_N_HEADS,
         p_dropout=0.1,
         num_layers=1,
+        use_rope=False,
     ):
         super(AttentionBackend, self).__init__()
         # inp_shape from Frontend is[Batch, Time, Channels, 1]
@@ -879,9 +946,15 @@ class AttentionBackend(nn.Module):
 
         # Apply 1D positional encoding to the [Batch, Time, Features] sequence
         if self.project:
-            self.pos_encoder = Summer(PositionalEncoding1D(channels=d_model))
+            if use_rope:
+                self.pos_encoder = RotaryPositionalEmbeddings(d=d_model)
+            else:
+                self.pos_encoder = Summer(PositionalEncoding1D(channels=d_model))
         else:
-            self.pos_encoder = Summer(PositionalEncoding1D(channels=c))
+            if use_rope:
+                self.pos_encoder = RotaryPositionalEmbeddings(d=c)
+            else:
+                self.pos_encoder = Summer(PositionalEncoding1D(channels=c))
 
         # PyTorch TransformerEncoderLayer already includes Layer Normalization (LN)
         if self.project:
@@ -1189,9 +1262,7 @@ def run_hyperparameter_search(config: TrainingConfig):
     grid = ParameterGrid(param_grid=TUNING_PARAM_GRID)
     print(f"Starting grid search with {len(grid)} total combinations.")
 
-    mlflow.set_experiment(
-        f"v2_{config.melspec_chunk_length}_chunk_music_model_grid_search"
-    )
+    mlflow.set_experiment(EXPERIMENT_NAME)
 
     for idx, params in enumerate(grid):
         print(f"\n>>> Grid search run: {idx+1}/{len(grid)}")
@@ -1241,6 +1312,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     d_model=ATTN_LIN_PROJ,
                     n_heads=ATTN_N_HEADS,
                     p_dropout=params["backend_dropout"],
+                    use_rope=USE_ROPE,
                 )
                 backend_out_features = ATTN_LIN_PROJ * 2
 

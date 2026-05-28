@@ -24,3 +24,4 @@ dev = [
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/rocm7.2"
 # url = "https://download.pytorch.org/whl/cu132"
+# url = "https://download.pytorch.org/whl/cu126"
