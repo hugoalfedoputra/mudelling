@@ -34,11 +34,18 @@ from dataclasses import dataclass
 # =================================================================================================
 N_MEL_BANDS = 96
 
+N_LAYERS = 3
+
 CNN_N_FILTERS = 64
-GRU_HIDDEN_SIZE = 92
+
+GRU_HIDDEN_SIZE = 92  # 355936 params
+IS_BIDIRECTIONAL = False
+# GRU_HIDDEN_SIZE = 50  # 348504 params
+# IS_BIDIRECTIONAL = True
+
 ATTN_LIN_PROJ = 92
 ATTN_N_HEADS = 4
-N_LAYERS = 3
+
 HIDDEN_UNITS = 200
 BATCH_SIZE = 32  # Follow TensorFlow's default
 
@@ -62,15 +69,14 @@ TUNING_PARAM_GRID = {
     "backend_type": ["CNN", "GRU", "ATTN"],
     "batch_size": [32],
     "epochs": [5],
-    "learning_rate": [1e-3, 1e-4],
-    "classifier_dropout": [0.1, 0.5],
-    "grad_clip_max_norm": [0.3, 1.0],
+    "learning_rate": [1e-2, 1e-3, 1e-4],
+    "classifier_dropout": [0.0],
+    # "grad_clip_max_norm": [0.3, 1.0],
+    "backend_dropout": [0.0, 0.1, 0.3, 0.5],
     # "cnn_dropout": [0.0, 0.25, 0.5],
     # "gru_clipping": [0.3, 0.5, 1.0],
     # "attn_n_heads": [2, 4, 8],
 }
-
-GRAD_NORM_CLIPPING_MAX_NORM = 1.0
 
 
 # region Global helpers
@@ -197,7 +203,7 @@ def load_config():
         training_metadata_path=training_metadata_path,
         dataset_relative_frequencies=dataset_relative_frequencies,
         run_id=run_id,
-        setup_params={"yInput": 96},
+        setup_params={"y_input": N_MEL_BANDS},  # number of melspec bins
     )
 
 
@@ -276,7 +282,7 @@ def dummy_run(config: TrainingConfig):
     # Pass input_shape=[16, 469, 464, 1] into the backends
     dummy_frontend_shape = [BATCH_SIZE, 469, 464, 1]
 
-    # Instantiate the 3 model variants
+    # CNN BE
     model_cnn = MusicModel(
         frontend=Frontend(config, num_filt=16),
         backend=CNNBackend(dummy_frontend_shape),
@@ -285,14 +291,27 @@ def dummy_run(config: TrainingConfig):
         ),
     )
 
+    # GRU BE
+    if IS_BIDIRECTIONAL:
+        D = 2
+    else:
+        D = 1
+
     model_gru = MusicModel(
         frontend=Frontend(config, num_filt=16),
-        backend=GRUBackend(dummy_frontend_shape, hidden_size=GRU_HIDDEN_SIZE),
+        backend=GRUBackend(
+            dummy_frontend_shape,
+            hidden_size=GRU_HIDDEN_SIZE,
+            is_bidirectional=IS_BIDIRECTIONAL,
+        ),
         classifier=Classifier(
-            in_features=2 * GRU_HIDDEN_SIZE, hidden_units=HIDDEN_UNITS, out_features=56
+            in_features=D * 2 * GRU_HIDDEN_SIZE,
+            hidden_units=HIDDEN_UNITS,
+            out_features=56,
         ),
     )
 
+    # ATTN BE
     model_attn = MusicModel(
         frontend=Frontend(config, num_filt=16),
         backend=AttentionBackend(
@@ -377,8 +396,8 @@ def bour_weighted_bce_loss(outputs: torch.Tensor, labels: torch.Tensor, p: np.nd
     )
 
     # Sum over the classes and average over the batch and number of classes
-    c = outputs.size(-1)
-    loss = -torch.sum(term1 + term2) / c
+    C = outputs.size(-1)
+    loss = -torch.sum(term1 + term2) / C
     return loss
 
 
@@ -488,7 +507,7 @@ class Frontend(nn.Module):
         super(Frontend, self).__init__()
 
         self.num_filt = num_filt
-        y_input = config.setup_params["yInput"]
+        y_input = config.setup_params["y_input"]
 
         # [TIMBRE] filter shape 1: 7x0.9f
         # Input padding in TF was [[0,0], [3,3], [0,0], [0,0]] (Time padding).
@@ -678,9 +697,11 @@ class Frontend(nn.Module):
 
 
 # endregion
-# region Backends
+
+
+# region CNN BE
 class CNNBackend(nn.Module):
-    def __init__(self, input_shape):
+    def __init__(self, input_shape, p_dropout=0.1):
         super(CNNBackend, self).__init__()
         # inp_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
@@ -692,6 +713,7 @@ class CNNBackend(nn.Module):
             padding=(0, 0),
         )
         self.bn_conv1 = nn.BatchNorm2d(CNN_N_FILTERS)
+        self.dropout1 = nn.Dropout(p=p_dropout)
 
         self.conv2 = nn.Conv2d(
             in_channels=CNN_N_FILTERS,
@@ -700,6 +722,7 @@ class CNNBackend(nn.Module):
             padding=(3, 0),
         )
         self.bn_conv2 = nn.BatchNorm2d(CNN_N_FILTERS)
+        self.dropout2 = nn.Dropout(p=p_dropout)
 
         self.conv3 = nn.Conv2d(
             in_channels=CNN_N_FILTERS,
@@ -708,77 +731,95 @@ class CNNBackend(nn.Module):
             padding=(3, 0),
         )
         self.bn_conv3 = nn.BatchNorm2d(CNN_N_FILTERS)
+        self.dropout3 = nn.Dropout(p=p_dropout)
 
         self.apply(init_conv_linear_weights)
 
     def forward(self, x):
-        # x shape is [B, T, C, 1] (Mimicking TF's NHWC)
+        # x shape is [B, T, C, 1] (mimicking TF's NHWC)
         # PyTorch Conv2D expects [B, in_channels, Height, Width]
         x = x.permute(0, 3, 1, 2)  # -> [B, 1, T, C]
 
-        # 1. First CNN Layer
-        out = F.relu(self.bn_conv1(self.conv1(x)))  # -> [B, 64, T-6, 1]
+        out = F.relu(self.bn_conv1(self.conv1(x)))
+        out = self.dropout1(out)  # [B, CNN_N_FILTERS, T, C]
 
-        # 2. Second CNN Layer (Time padding preserves T-6)
-        out = F.relu(self.bn_conv2(self.conv2(out)))  # -> [B, 64, T-6, 1]
+        out = F.relu(self.bn_conv2(self.conv2(out)))
+        out = self.dropout2(out)  # [B, CNN_N_FILTERS, T, C]
 
-        # 3. Max Pooling (Downsamples Time dimension by half)
+        # 3. Maxpooling (downsamples time dimension by half)
         # Matches TF's pool_size=[2, 1], strides=[2, 1]
-        out = F.max_pool2d(
-            out, kernel_size=(2, 1), stride=(2, 1)
-        )  # -> [B, 64, (T-6)//2, 1]
+        out = F.max_pool2d(out, kernel_size=(2, 1), stride=(2, 1))
 
         # 4. Third CNN Layer
-        out = F.relu(self.bn_conv3(self.conv3(out)))  # -> [B, 64, (T-6)//2, 1]
+        out = F.relu(self.bn_conv3(self.conv3(out)))  # [B, CNN_N_FILTERS, T, C // 2]
 
         # 5. Global Pooling prep
         # Squeeze the trailing Width dimension of 1 to perform 1D Adaptive Pooling over time
-        out = out.squeeze(3)  # -> [B, 64, Time]
+        out = out.squeeze(3)  # -> [B, CNN_N_FILTERS, T]
 
-        out_mean = F.adaptive_avg_pool1d(out, 1).squeeze(2)  # -> [B, 64]
-        out_max = F.adaptive_max_pool1d(out, 1).squeeze(2)  # -> [B, 64]
+        out_mean = F.adaptive_avg_pool1d(out, 1).squeeze(2)  # -> [B, CNN_N_FILTERS]
+        out_max = F.adaptive_max_pool1d(out, 1).squeeze(2)  # -> [B, CNN_N_FILTERS]
 
-        # Concatenate on the feature dimension (yielding a flat [B, 128] vector)
+        # Concatenate on the feature dimension (yielding a flat [B, 2 * CNN_N_FILTERS] vector)
         out_cat = torch.cat([out_mean, out_max], dim=1)
+        out_cat = self.dropout3(out_cat)
 
         return out_cat
 
 
+# endregion
+
+
+# region GRU BE
 class GRUBackend(nn.Module):
-    def __init__(self, input_shape, hidden_size=GRU_HIDDEN_SIZE):
+    def __init__(
+        self,
+        input_shape,
+        hidden_size=GRU_HIDDEN_SIZE,
+        p_dropout=0.1,
+        is_bidirectional=False,
+    ):
         super(GRUBackend, self).__init__()
         # inp_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
+
+        if is_bidirectional:
+            D = 2
+        else:
+            D = 1
 
         self.gru1 = nn.GRU(
             input_size=C,
             hidden_size=hidden_size,
             num_layers=1,
             batch_first=True,
-            bidirectional=False,
+            bidirectional=is_bidirectional,
         )
 
-        self.ln1 = nn.LayerNorm(normalized_shape=hidden_size)
+        self.ln1 = nn.LayerNorm(normalized_shape=D * hidden_size)
+        self.dropout1 = nn.Dropout(p=p_dropout)
 
         self.gru2 = nn.GRU(
-            input_size=hidden_size,
+            input_size=D * hidden_size,
             hidden_size=hidden_size,
             num_layers=1,
             batch_first=True,
-            bidirectional=False,
+            bidirectional=is_bidirectional,
         )
 
-        self.ln2 = nn.LayerNorm(normalized_shape=hidden_size)
+        self.ln2 = nn.LayerNorm(normalized_shape=D * hidden_size)
+        self.dropout2 = nn.Dropout(p=p_dropout)
 
         self.gru3 = nn.GRU(
-            input_size=hidden_size,
+            input_size=D * hidden_size,
             hidden_size=hidden_size,
             num_layers=1,
             batch_first=True,
-            bidirectional=False,
+            bidirectional=is_bidirectional,
         )
 
-        self.ln3 = nn.LayerNorm(normalized_shape=hidden_size)
+        self.ln3 = nn.LayerNorm(normalized_shape=D * hidden_size)
+        self.dropout3 = nn.Dropout(p=p_dropout)
 
         # Weight initialisation uses defalt uniform dist. but bias set to 0
         nn.init.constant_(torch.Tensor(self.gru1.bias_ih_l0), 0)
@@ -791,9 +832,11 @@ class GRUBackend(nn.Module):
 
         out, _ = self.gru1(x)  # out shape:[B, T, N_FILTERS]
         out = self.ln1(out)
+        out = self.dropout1(out)
 
         out, _ = self.gru2(out)
         out = self.ln2(out)
+        out = self.dropout2(out)
 
         out, _ = self.gru3(out)
         out = self.ln3(out)
@@ -805,9 +848,15 @@ class GRUBackend(nn.Module):
         out_max = F.adaptive_max_pool1d(out, 1).squeeze(2)  # -> [B, N_FILTERS]
 
         out_cat = torch.cat([out_mean, out_max], dim=1)  # -> [B, 1024]
+        out_cat = self.dropout3(out_cat)
+
         return out_cat
 
 
+# endregion
+
+
+# region ATTN BE
 class AttentionBackend(nn.Module):
     def __init__(
         self,
@@ -815,6 +864,7 @@ class AttentionBackend(nn.Module):
         project=False,
         d_model=ATTN_LIN_PROJ,
         n_heads=ATTN_N_HEADS,
+        p_dropout=0.1,
         num_layers=1,
     ):
         super(AttentionBackend, self).__init__()
@@ -840,6 +890,7 @@ class AttentionBackend(nn.Module):
                 nhead=n_heads,
                 dim_feedforward=d_model,
                 batch_first=True,
+                dropout=p_dropout,
             )
         else:
             self.encoder_layer = nn.TransformerEncoderLayer(
@@ -847,6 +898,7 @@ class AttentionBackend(nn.Module):
                 nhead=n_heads,
                 dim_feedforward=c,
                 batch_first=True,
+                dropout=p_dropout,
             )
 
         self.transformer1 = nn.TransformerEncoder(
@@ -1030,7 +1082,7 @@ class MusicDataset(Dataset):
         return melspec_tensor, label_tensor
 
 
-# region Training
+# region Train helpers
 # endregion
 def _train_one_epoch(
     config: TrainingConfig,
@@ -1080,7 +1132,9 @@ def _train_one_epoch(
         # Backward pass & optimize
         loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
+        # region clip_grad_norm
+        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
+        # endregion
 
         optimizer.step()
 
@@ -1103,6 +1157,7 @@ def _train_one_epoch(
     return avg_epoch_loss
 
 
+# region Tuning
 def run_hyperparameter_search(config: TrainingConfig):
     """
     This function does not implement the ability to resume training from a checkpoint even if
@@ -1170,10 +1225,14 @@ def run_hyperparameter_search(config: TrainingConfig):
             frontend_out = frontend(dummy_input)
 
             if params["backend_type"] == "CNN":
-                backend = CNNBackend(input_shape=frontend_out.shape)
+                backend = CNNBackend(
+                    input_shape=frontend_out.shape, p_dropout=params["backend_dropout"]
+                )
                 backend_out_features = CNN_N_FILTERS * 2
             elif params["backend_type"] == "GRU":
-                backend = GRUBackend(input_shape=frontend_out.shape)
+                backend = GRUBackend(
+                    input_shape=frontend_out.shape, p_dropout=params["backend_dropout"]
+                )
                 backend_out_features = GRU_HIDDEN_SIZE * 2
             elif params["backend_type"] == "ATTN":
                 backend = AttentionBackend(
@@ -1181,6 +1240,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     project=True,
                     d_model=ATTN_LIN_PROJ,
                     n_heads=ATTN_N_HEADS,
+                    p_dropout=params["backend_dropout"],
                 )
                 backend_out_features = ATTN_LIN_PROJ * 2
 
@@ -1210,7 +1270,9 @@ def run_hyperparameter_search(config: TrainingConfig):
                     device=device,
                     epoch=epoch,
                     bour_loss=True,
-                    grad_clip_max_norm=params["grad_clip_max_norm"],
+                    # region clip_grad_norm
+                    # grad_clip_max_norm=params["grad_clip_max_norm"],
+                    # endregion
                 )
 
                 # 2. Validate after epoch
@@ -1278,6 +1340,10 @@ def run_hyperparameter_search(config: TrainingConfig):
                 torch.cuda.empty_cache()
 
 
+# endregion
+
+
+# region Training
 def run_training(config: TrainingConfig, json_config_path: str, resume_checkpoint=None):
     params: dict = {}
 
@@ -1501,8 +1567,10 @@ def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_i
     )
 
 
-# region Validation
 # endregion
+
+
+# region Validation
 def _validate_model(
     config: TrainingConfig,
     model: MusicModel,
@@ -1571,6 +1639,9 @@ def _validate_model(
     metrics["val_macro_roc_auc"] = float(np.mean(roc_aucs))
 
     return metrics
+
+
+# endregion
 
 
 # region Testing
