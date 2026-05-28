@@ -1735,13 +1735,13 @@ def main():
 
     check_system(config=config)
 
-    sys_prepare()
+    # sys_prepare()
 
-    download_all_melspecs_first()
+    # download_all_melspecs_first()
 
-    # dummy_run(config=config)
+    dummy_run(config=config)
 
-    run_hyperparameter_search(config=config)
+    # run_hyperparameter_search(config=config)
 
     # run_training(config=config, json_config_path="./params.json")
 
