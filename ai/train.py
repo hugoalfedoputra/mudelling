@@ -1377,6 +1377,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     local_ckpt_path = (
                         f"{checkpoint_dir}/{EXPERIMENT_IDENT}/tuning_run_{idx}_checkpoint_{epoch}.pth"
                     )
+                    os.makedirs(local_ckpt_path, exist_ok=True)
 
                     torch.save(
                         {
