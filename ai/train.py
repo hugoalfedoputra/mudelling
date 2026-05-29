@@ -34,22 +34,22 @@ from dataclasses import dataclass
 # =================================================================================================
 N_MEL_BANDS = 96
 
-EXPERIMENT_IDENT = "v2ALT_15s"
+EXPERIMENT_IDENT = "v2_15s"
 EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
 
 N_LAYERS = 3
 
 CNN_N_FILTERS = 64
 
-# GRU_HIDDEN_SIZE = 92  # 355936 params
-# IS_BIDIRECTIONAL = False
-GRU_HIDDEN_SIZE = 50  # 348504 params
-IS_BIDIRECTIONAL = True
+GRU_HIDDEN_SIZE = 92  # 355936 params
+IS_BIDIRECTIONAL = False
+# GRU_HIDDEN_SIZE = 50  # 348504 params
+# IS_BIDIRECTIONAL = True
 
 ATTN_LIN_PROJ = 92
 ATTN_N_HEADS = 4
-# USE_ROPE = False
-USE_ROPE = True
+USE_ROPE = False
+# USE_ROPE = True
 
 HIDDEN_UNITS = 200
 BATCH_SIZE = 32  # Follow TensorFlow's default
@@ -71,8 +71,8 @@ LOCAL_MODEL_FOLDER = "model"
 LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
-    # "backend_type": ["CNN", "GRU", "ATTN"],
-    "backend_type": ["GRU", "ATTN"],  # for bidirectional testing and RoPE testing
+    "backend_type": ["CNN", "GRU", "ATTN"],
+    # "backend_type": ["GRU", "ATTN"],  # for bidirectional testing and RoPE testing
     "batch_size": [32],
     "epochs": [5],
     "learning_rate": [1e-2, 1e-3, 1e-4],
