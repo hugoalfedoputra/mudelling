@@ -37,6 +37,7 @@ RCLONE_ARGS = [
     "300s",
     "--retries-sleep",
     "10s",
+    "-vv",
     # "--dry-run",
 ]
 
