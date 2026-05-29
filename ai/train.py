@@ -416,7 +416,7 @@ def init_conv_linear_weights(m):
 
 def get_emb(sin_inp):
     """
-    Positional encoding code from tatp22/multidim-positional-encoding)
+    Source: https://github.com/tatp22/multidim-positional-encoding/blob/master/positional_encodings/torch_encodings.py
 
     Gets a base embedding for one dimension with sin and cos intertwined
     """
@@ -439,17 +439,17 @@ class PositionalEncoding1D(nn.Module):
         inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
 
         self.register_buffer("inv_freq", inv_freq)
-        self.register_buffer("cached_penc", None, persistent=False)
+        self.register_buffer("cached_posenc", None, persistent=False)
 
         self.dtype_override = dtype_override
 
     def forward(self, tensor):
         if len(tensor.shape) != 3:
-            raise RuntimeError("The input tensor has to be 3d!")
-        if self.cached_penc is not None and self.cached_penc.shape == tensor.shape:
-            return self.cached_penc
+            raise RuntimeError("The input tensor has to be 3D [Batch, Time, Channels]!")
+        if self.cached_posenc is not None and self.cached_posenc.shape == tensor.shape:
+            return self.cached_posenc
 
-        self.cached_penc = None
+        self.cached_posenc = None
         batch_size, x, orig_ch = tensor.shape
         pos_x = torch.arange(x, device=tensor.device, dtype=self.inv_freq.dtype)  # type: ignore
         sin_inp_x = torch.einsum("i,j->ij", pos_x, self.inv_freq)
@@ -463,79 +463,86 @@ class PositionalEncoding1D(nn.Module):
         )
         emb[:, : self.channels] = emb_x
 
-        self.cached_penc = emb[None, :, :orig_ch].repeat(batch_size, 1, 1)
-        return self.cached_penc
+        self.cached_posenc = emb[None, :, :orig_ch].repeat(batch_size, 1, 1)
+        return self.cached_posenc
 
 
 class Summer(nn.Module):
     def __init__(self, penc):
         super(Summer, self).__init__()
-        self.penc = penc
+        self.posenc = penc
 
     def forward(self, tensor):
-        penc = self.penc(tensor)
+        posenc = self.posenc(tensor)
         assert (
-            tensor.size() == penc.size()
-        ), f"The original tensor size {tensor.size()} and the positional encoding tensor size {penc.size()} must match!"
-        return tensor + penc.to(tensor.device)
+            tensor.size() == posenc.size()
+        ), f"The original tensor size {tensor.size()} and the positional encoding tensor size {posenc.size()} must match!"
+        return tensor + posenc.to(tensor.device)
 
 
-class RotaryPositionalEmbeddings(nn.Module):
+class RotaryPositionalEmbeddings1D(nn.Module):
     """
-    Source: https://github.com/aju22/RoPE-PyTorch/blob/main/RoPE.ipynb
+    Source: https://github.com/aju22/RoPE-PyTorch/blob/main/RoPE.ipynb with modifications that references
+    https://github.com/tatp22/multidim-positional-encoding/blob/master/positional_encodings/torch_encodings.py
     """
 
-    def __init__(self, d: int, base: int = 10000):
+    def __init__(self, channels: int, base: int = 10_000):
         super().__init__()
+        self.channels = channels
         self.base = base
-        self.d = d
-        self.cos_cached = None
-        self.sin_cached = None
+
+        self.register_buffer("cos_cached", None, persistent=False)
+        self.register_buffer("sin_cached", None, persistent=False)
 
     def _build_cache(self, x: torch.Tensor):
-        if self.cos_cached is not None and x.shape[0] <= self.cos_cached.shape[0]:
+        # Input x is [B, T, C], so sequence length (Time) is dimension 1
+        seq_len = x.shape[1]
+
+        if self.cos_cached is not None and seq_len <= self.cos_cached.shape[1]:  # type: ignore
             return
 
-        seq_len = x.shape[0]
+        # THETA = 1/10,000^(2i/d)
+        theta = 1.0 / (
+            self.base ** (torch.arange(0, self.channels, 2).float() / self.channels)
+        ).to(x.device)
 
-        theta = 1.0 / (self.base ** (torch.arange(0, self.d, 2).float() / self.d)).to(
-            x.device
-        )  # THETA = 10,000^(-2*i/d) or 1/10,000^(2i/d)
+        # Position Index -> [0, 1, 2 ... T-1]
+        seq_idx = torch.arange(seq_len, device=x.device).float()
 
-        seq_idx = (
-            torch.arange(seq_len, device=x.device).float().to(x.device)
-        )  # Position Index -> [0,1,2...seq-1]
+        # Calculates [T, channels/2]
+        idx_theta = torch.einsum("n,d->nd", seq_idx, theta)
 
-        idx_theta = torch.einsum(
-            "n,d->nd", seq_idx, theta
-        )  # Calculates m*(THETA) = [ [0, 0...], [THETA_1, THETA_2...THETA_d/2], ... [seq-1*(THETA_1), seq-1*(THETA_2)...] ]
+        # Concatenate to match channel dimension: [T, channels/2] -> [T, channels]
+        idx_theta2 = torch.cat([idx_theta, idx_theta], dim=1)
 
-        idx_theta2 = torch.cat(
-            [idx_theta, idx_theta], dim=1
-        )  # [THETA_1, THETA_2...THETA_d/2] -> [THETA_1, THETA_2...THETA_d]
+        cos_cache = idx_theta2.cos().unsqueeze(0)  # [1, T, C]
+        sin_cache = idx_theta2.sin().unsqueeze(0)  # [1, T, C]
 
-        self.cos_cached = idx_theta2.cos()[
-            :, None, None, :
-        ]  # Cache [cosTHETA_1, cosTHETA_2...cosTHETA_d]
-        self.sin_cached = idx_theta2.sin()[
-            :, None, None, :
-        ]  # cache [sinTHETA_1, sinTHETA_2...sinTHETA_d]
+        self.register_buffer("cos_cached", cos_cache, persistent=False)
+        self.register_buffer("sin_cached", sin_cache, persistent=False)
 
     def _neg_half(self, x: torch.Tensor):
-        d_2 = self.d // 2  #
+        d_2 = self.channels // 2
 
-        return torch.cat(
-            [-x[:, :, :, d_2:], x[:, :, :, :d_2]], dim=-1
-        )  # [x_1, x_2,...x_d] -> [-x_d/2, ... -x_d, x_1, ... x_d/2]
+        # Using the ellipsis `...` allows this to work dynamically regardless
+        # of whether the input is 2D, 3D [B, T, C], or 4D
+        return torch.cat([-x[..., d_2:], x[..., :d_2]], dim=-1)
 
     def forward(self, x: torch.Tensor):
+        if len(x.shape) != 3:
+            raise RuntimeError("The input tensor has to be 3D [Batch, Time, Channels]!")
+
         self._build_cache(x)
+
+        seq_len = x.shape[1]
+
+        # cos and sin will be of shape [1, T, C]
+        cos = self.cos_cached[:, :seq_len, :]  # type: ignore
+        sin = self.sin_cached[:, :seq_len, :]  # type: ignore
 
         neg_half_x = self._neg_half(x)
 
-        x_rope = (x * self.cos_cached[: x.shape[0]]) + (  # type: ignore
-            neg_half_x * self.sin_cached[: x.shape[0]]  # type: ignore
-        )  # [x_1*cosTHETA_1 - x_d/2*sinTHETA_d/2, ....]
+        x_rope = (x * cos) + (neg_half_x * sin)
 
         return x_rope
 
@@ -947,12 +954,12 @@ class AttentionBackend(nn.Module):
         # Apply 1D positional encoding to the [Batch, Time, Features] sequence
         if self.project:
             if use_rope:
-                self.pos_encoder = RotaryPositionalEmbeddings(d=d_model)
+                self.pos_encoder = RotaryPositionalEmbeddings1D(channels=d_model)
             else:
                 self.pos_encoder = Summer(PositionalEncoding1D(channels=d_model))
         else:
             if use_rope:
-                self.pos_encoder = RotaryPositionalEmbeddings(d=c)
+                self.pos_encoder = RotaryPositionalEmbeddings1D(channels=c)
             else:
                 self.pos_encoder = Summer(PositionalEncoding1D(channels=c))
 
