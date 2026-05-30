@@ -35,6 +35,7 @@ from dataclasses import dataclass
 N_MEL_BANDS = 96
 
 IS_TESTING = False
+# IS_TESTING = True
 EXPERIMENT_IDENT = "v3_15s"
 EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
 
@@ -87,6 +88,7 @@ TUNING_PARAM_GRID = {
     "backend_dropout": [0.0, 0.1, 0.3, 0.5],
     #
     # TESTING:
+    # "batch_size": [32],
     # "learning_rate": [1e-2],
     # "classifier_dropout": [0.0],
     # "backend_dropout": [0.0],
