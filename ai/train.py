@@ -34,7 +34,8 @@ from dataclasses import dataclass
 # =================================================================================================
 N_MEL_BANDS = 96
 
-EXPERIMENT_IDENT = "v2_15s"
+IS_TESTING = False
+EXPERIMENT_IDENT = "v3_15s"
 EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
 
 N_LAYERS = 3
@@ -71,17 +72,28 @@ LOCAL_MODEL_FOLDER = "model"
 LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
+    # CHANGE THIS:
     "backend_type": ["CNN"],
     # "backend_type": ["GRU"],
     # "backend_type": ["ATTN"],
-    # "backend_type": ["CNN", "GRU", "ATTN"], # for all at once
+    # "backend_type": ["CNN", "GRU", "ATTN"],  # for all at once
     # "backend_type": ["GRU", "ATTN"],  # for bidirectional testing and RoPE testing
+    #
+    # MAIN PARAMS:
     "batch_size": [32],
     "epochs": [5],
     "learning_rate": [1e-2, 1e-3, 1e-4],
     "classifier_dropout": [0.0],
-    # "grad_clip_max_norm": [0.3, 1.0],
     "backend_dropout": [0.0, 0.1, 0.3, 0.5],
+    #
+    # TESTING:
+    # "learning_rate": [1e-2],
+    # "classifier_dropout": [0.0],
+    # "backend_dropout": [0.0],
+    # "epochs": [1],
+    #
+    # ALTS:
+    # "grad_clip_max_norm": [0.3, 1.0],
     # "cnn_dropout": [0.0, 0.25, 0.5],
     # "gru_clipping": [0.3, 0.5, 1.0],
     # "attn_n_heads": [2, 4, 8],
@@ -104,7 +116,9 @@ class TrainingConfig:
     mlflow_password: str
     mlflow_tracking_uri: str
     training_metadata_path: str
-    dataset_relative_frequencies: np.ndarray
+    training_relative_frequencies: np.ndarray
+    validation_metadata_path: str
+    validation_relative_frequencies: np.ndarray
     run_id: str
     setup_params: dict
 
@@ -165,6 +179,7 @@ def load_config():
             os.environ["MLFLOW_TRACKING_PASSWORD"] != "",
             os.environ["MLFLOW_TRACKING_URI"] != "",
             os.environ["TRAINING_METADATA_CSV"] != "",
+            os.environ["VALIDATION_METADATA_CSV"] != "",
             os.environ["RUN_ID"] != "",
         ]
     ):
@@ -188,8 +203,12 @@ def load_config():
         mlflow_password = os.environ["MLFLOW_TRACKING_PASSWORD"]
         mlflow_tracking_uri = os.environ["MLFLOW_TRACKING_URI"]
         training_metadata_path = os.environ["TRAINING_METADATA_CSV"]
-        dataset_relative_frequencies = _calculate_dataset_relative_frequencies(
+        training_relative_frequencies = _calculate_dataset_relative_frequencies(
             metadata_path=training_metadata_path
+        )
+        validation_metadata_path = os.environ["VALIDATION_METADATA_CSV"]
+        validation_relative_frequencies = _calculate_dataset_relative_frequencies(
+            metadata_path=validation_metadata_path
         )
         run_id = os.environ["RUN_ID"]
     except KeyError as e:
@@ -210,7 +229,9 @@ def load_config():
         mlflow_password=mlflow_password,
         mlflow_tracking_uri=mlflow_tracking_uri,
         training_metadata_path=training_metadata_path,
-        dataset_relative_frequencies=dataset_relative_frequencies,
+        training_relative_frequencies=training_relative_frequencies,
+        validation_metadata_path=validation_metadata_path,
+        validation_relative_frequencies=validation_relative_frequencies,
         run_id=run_id,
         setup_params={"y_input": N_MEL_BANDS},  # number of melspec bins
     )
@@ -1204,7 +1225,7 @@ def _train_one_epoch(
         # Compute loss
         if bour_loss:
             loss = bour_weighted_bce_loss(
-                outputs, labels, p=config.dataset_relative_frequencies
+                outputs, labels, p=config.training_relative_frequencies
             )
         elif criterion is not None:
             loss = criterion(outputs, labels)
@@ -1254,21 +1275,27 @@ def run_hyperparameter_search(config: TrainingConfig):
     tag2idx, vocab = build_vocabulary(config.training_metadata_path)
     num_classes = len(vocab)
 
-    train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
+    if IS_TESTING:
+        train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/traintest"
+    else:
+        train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
     train_dataset = MusicDataset(
         base_dir=train_dir,
         tag2idx=tag2idx,
         chunk_length_prefix=config.melspec_chunk_length,
     )
 
-    print("Preparing validation dataset for Grid Search...")
-    dl.main(split="val")
-    val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
-    val_dataset = MusicDataset(
-        base_dir=val_dir,
-        tag2idx=tag2idx,
-        chunk_length_prefix=config.melspec_chunk_length,
-    )
+    # print("Preparing validation dataset for Grid Search...")
+    # if IS_TESTING:
+    #     val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/valtest"
+    # else:
+    #     dl.main(split="val")
+    #     val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
+    # val_dataset = MusicDataset(
+    #     base_dir=val_dir,
+    #     tag2idx=tag2idx,
+    #     chunk_length_prefix=config.melspec_chunk_length,
+    # )
 
     grid = ParameterGrid(param_grid=TUNING_PARAM_GRID)
     print(f"Starting grid search with {len(grid)} total combinations.")
@@ -1290,13 +1317,13 @@ def run_hyperparameter_search(config: TrainingConfig):
                 pin_memory=False,
             )
 
-            val_loader = DataLoader(
-                val_dataset,
-                batch_size=params["batch_size"],
-                shuffle=False,
-                num_workers=config.num_processes,
-                pin_memory=False,
-            )
+            # val_loader = DataLoader(
+            #     val_dataset,
+            #     batch_size=1,
+            #     shuffle=False,
+            #     num_workers=config.num_processes,
+            #     pin_memory=False,
+            # )
 
             frontend = Frontend(config=config)
 
@@ -1363,9 +1390,11 @@ def run_hyperparameter_search(config: TrainingConfig):
                 val_metrics = _validate_model(
                     config=config,
                     model=model,
-                    val_loader=val_loader,
+                    # val_loader=val_loader,
                     device=device,
+                    tag2idx=tag2idx,
                     vocab=vocab,
+                    num_classes=num_classes,
                 )
 
                 print(
@@ -1413,7 +1442,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                 model,
                 optimizer,
                 training_loader,
-                val_loader,
+                # val_loader,
                 frontend,
                 backend,
                 classifier,
@@ -1457,7 +1486,10 @@ def run_training(
         tag2idx, vocab = build_vocabulary(config.training_metadata_path)
         num_classes = len(vocab)
 
-        train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
+        if IS_TESTING:
+            train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/traintest"
+        else:
+            train_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/train"
         train_dataset = MusicDataset(
             base_dir=train_dir,
             tag2idx=tag2idx,
@@ -1472,21 +1504,24 @@ def run_training(
         )
 
         # Download and setup validation data
-        print("Preparing validation dataset...")
-        dl.main(split="val")
-        val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
-        val_dataset = MusicDataset(
-            base_dir=val_dir,
-            tag2idx=tag2idx,
-            chunk_length_prefix=config.melspec_chunk_length,
-        )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=params["batch_size"],
-            shuffle=False,  # No need to shuffle validation data
-            num_workers=config.num_processes,
-            pin_memory=False,
-        )
+        # print("Preparing validation dataset...")
+        # if IS_TESTING:
+        #     val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/valtest"
+        # else:
+        #     dl.main(split="val")
+        #     val_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val"
+        # val_dataset = MusicDataset(
+        #     base_dir=val_dir,
+        #     tag2idx=tag2idx,
+        #     chunk_length_prefix=config.melspec_chunk_length,
+        # )
+        # val_loader = DataLoader(
+        #     val_dataset,
+        #     batch_size=1,
+        #     shuffle=False,  # No need to shuffle validation data
+        #     num_workers=config.num_processes,
+        #     pin_memory=False,
+        # )
 
         frontend = Frontend(config=config)
 
@@ -1554,9 +1589,11 @@ def run_training(
             val_metrics = _validate_model(
                 config=config,
                 model=model,
-                val_loader=val_loader,
+                # val_loader=val_loader,
                 device=device,
+                tag2idx=tag2idx,
                 vocab=vocab,
+                num_classes=num_classes,
             )
             print(
                 f"Validation Macro PR-AUC: {val_metrics['val_macro_pr_auc']:.8f} | Macro ROC-AUC: {val_metrics['val_macro_roc_auc']:.8f}"
@@ -1670,37 +1707,86 @@ def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_i
 def _validate_model(
     config: TrainingConfig,
     model: MusicModel,
-    val_loader: DataLoader,
+    # val_loader: DataLoader,
     device,
+    tag2idx,
     vocab: list,
+    num_classes,
 ):
     model.eval()
-    all_outputs = []
-    all_labels = []
-    batch_losses = []
+
+    df = pd.read_csv(config.validation_metadata_path)
+    print(f"Starting unweighted chunk-averaged inference on {len(df)} tracks...")
+    start_time = time.time()
+
+    all_song_outputs = []
+    all_song_labels = []
 
     with torch.no_grad():
-        for melspecs, labels in val_loader:
-            melspecs = melspecs.to(device)
-            labels = labels.to(device)
+        for _, row in df.iterrows():
+            path_val = row["PATH"]
+            subfolder = path_val.split("/")[0]
+            song_id = path_val.split("/")[1].split(".")[0]
 
-            outputs = model(melspecs)
-            loss = bour_weighted_bce_loss(
-                outputs, labels, p=config.dataset_relative_frequencies
+            chunk_dir = Path(
+                f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val/{config.melspec_chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}"
             )
+            pattern = f"{config.melspec_chunk_length}{song_id}_*.npy"
+            chunk_files = sorted(list(chunk_dir.glob(pattern)))
 
-            batch_losses.append(loss.item())
+            if not chunk_files:
+                # Silently skip missing val chunks to avoid log spam
+                continue
 
-            # Move outputs to CPU because eval metric calculations use sklearn
-            all_outputs.append(outputs.cpu().numpy())
-            all_labels.append(labels.cpu().numpy())
+            chunks_tensors = [
+                torch.from_numpy(np.load(cf).transpose()).float() for cf in chunk_files
+            ]
+            batch_melspecs = torch.stack(chunks_tensors).to(device)
 
-    # Stack all batches into single numpy arrays: shape [total_samples, 56]
-    all_outputs = np.vstack(all_outputs)
-    all_labels = np.vstack(all_labels)
+            # Target Labels
+            tags = row["TAGS"].split("+")
+            label_tensor = torch.zeros(num_classes, dtype=torch.float32)
+            for t in tags:
+                if t in tag2idx:
+                    label_tensor[tag2idx[t]] = 1.0
 
-    val_loss_avg = float(np.mean(batch_losses))
-    val_loss_std = float(np.std(batch_losses))
+            # Forward pass: shape [num_chunks, 56]
+            outputs = model(batch_melspecs)
+
+            # Average inference outputs over chunks to get a song-level prediction [56]
+            song_output = torch.mean(outputs, dim=0)
+
+            all_song_outputs.append(song_output.cpu().numpy())
+            all_song_labels.append(label_tensor.numpy())
+
+    if len(all_song_outputs) == 0:
+        traceback.print_exc()
+        raise Exception(
+            "No validation files were evaluated. Skipping metrics generation..."
+        )
+
+    # 3. Format overall results to specified sizes (N_SONGS, 56)
+    all_song_outputs = np.vstack(all_song_outputs)
+    all_song_labels = np.vstack(all_song_labels)
+
+    # Calculate testing split Loss using Bour's logic
+    outputs_t = torch.from_numpy(all_song_outputs).to(device)
+    labels_t = torch.from_numpy(all_song_labels).to(device)
+
+    overall_test_loss = bour_weighted_bce_loss(
+        outputs_t, labels_t, config.training_relative_frequencies
+    )
+    val_loss_avg = overall_test_loss.item()
+
+    # Std dev of testing loss
+    pt = torch.from_numpy(config.training_relative_frequencies).to(device)
+    w_pos, w_neg = 2.0 / (1.0 + pt), (2.0 * pt) / (1.0 + pt)
+    eps = 10e-12
+    out_clamp = torch.clamp(outputs_t, min=eps, max=1.0 - eps)
+    t1 = w_pos * labels_t * torch.clamp(torch.log(out_clamp), min=-100)
+    t2 = w_neg * (1.0 - labels_t) * torch.clamp(torch.log(1.0 - out_clamp), min=-100)
+    per_song_losses = -torch.sum(t1 + t2, dim=1) / num_classes  # [N_SONGS]
+    val_loss_std = float(torch.std(per_song_losses).item())
 
     metrics = {"val_loss_avg": val_loss_avg, "val_loss_std": val_loss_std}
 
@@ -1709,8 +1795,8 @@ def _validate_model(
 
     # Calculate PR-AUC and ROC-AUC per label (OvR)
     for i, label_name in enumerate(vocab):
-        y_true = all_labels[:, i]
-        y_score = all_outputs[:, i]
+        y_score = all_song_outputs[:, i]
+        y_true = all_song_labels[:, i]
 
         # There's been cases where the y_score is NaN and average_precision_score is throwing
         # ValueError of it receiving an input of NaN
@@ -1733,6 +1819,8 @@ def _validate_model(
     # Calculate macro averages
     metrics["val_macro_pr_auc"] = float(np.mean(pr_aucs))
     metrics["val_macro_roc_auc"] = float(np.mean(roc_aucs))
+
+    print(f"Validation finished in {time.time() - start_time:.2f}s.")
 
     return metrics
 
@@ -1761,19 +1849,19 @@ def main():
 
     sys_prepare()
 
-    download_all_melspecs_first()
+    # download_all_melspecs_first()
 
     # dummy_run(config=config)
 
-    # run_hyperparameter_search(config=config)
+    run_hyperparameter_search(config=config)
 
     # run_training(config=config, json_config_path="./params.json")
 
-    run_retraining(
-        config=config,
-        json_config_path="./params.json",
-        previous_run_id=config.run_id,
-    )
+    # run_retraining(
+    #     config=config,
+    #     json_config_path="./params.json",
+    #     previous_run_id=config.run_id,
+    # )
 
 
 if __name__ == "__main__":

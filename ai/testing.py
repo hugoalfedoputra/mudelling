@@ -42,6 +42,7 @@ from train import (
     bour_weighted_bce_loss,
     _calculate_dataset_relative_frequencies,
     load_config,
+    LOCAL_MODEL_FOLDER,
     N_MEL_BANDS,
     CNN_N_FILTERS,
     GRU_HIDDEN_SIZE,
@@ -188,7 +189,7 @@ def evaluate_run(config: TestingConfig, run, tag2idx, vocab, num_classes, device
     local_checkpoint_path = mlflow.artifacts.download_artifacts(
         run_id=run_id,
         artifact_path=best_pth_artifact_path,
-        dst_path=f"{LOCAL_TEMP_FOLDER}/{run_id}/downloaded_test_checkpoints",
+        dst_path=f"{LOCAL_TEMP_FOLDER}/{LOCAL_MODEL_FOLDER}/{run_id}/downloaded_test_checkpoints",
     )
 
     # 1. Instantiate model and load weights
@@ -314,7 +315,7 @@ def evaluate_run(config: TestingConfig, run, tag2idx, vocab, num_classes, device
     test_metrics["test_macro_roc_auc"] = float(np.mean(roc_aucs))
 
     print(f"Testing finished in {time.time() - start_time:.2f}s.")
-    # print(f"Overall test avg Loss: {overall_test_loss_val:.8f}")
+    print(f"Overall test avg loss: {overall_test_loss_val:.8f}")
     print(f"Test macro PR-AUC: {test_metrics['test_macro_pr_auc']:.8f}")
     print(f"Test macro ROC-AUC: {test_metrics['test_macro_roc_auc']:.8f}")
 
