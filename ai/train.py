@@ -71,7 +71,10 @@ LOCAL_MODEL_FOLDER = "model"
 LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
-    "backend_type": ["CNN", "GRU", "ATTN"],
+    "backend_type": ["CNN"],
+    # "backend_type": ["GRU"],
+    # "backend_type": ["ATTN"],
+    # "backend_type": ["CNN", "GRU", "ATTN"], # for all at once
     # "backend_type": ["GRU", "ATTN"],  # for bidirectional testing and RoPE testing
     "batch_size": [32],
     "epochs": [5],
@@ -121,8 +124,8 @@ def sys_prepare():
         os.makedirs(checkpoint_download_path)
 
 
-def _calculate_dataset_relative_frequencies(training_metadata_path) -> np.ndarray:
-    tdf = pd.read_csv(training_metadata_path)
+def _calculate_dataset_relative_frequencies(metadata_path) -> np.ndarray:
+    tdf = pd.read_csv(metadata_path)
     tdf["TAGS"] = tdf["TAGS"].apply(lambda x: x.replace("mood/theme---", "").split("+"))
 
     freqs = {}
@@ -186,7 +189,7 @@ def load_config():
         mlflow_tracking_uri = os.environ["MLFLOW_TRACKING_URI"]
         training_metadata_path = os.environ["TRAINING_METADATA_CSV"]
         dataset_relative_frequencies = _calculate_dataset_relative_frequencies(
-            training_metadata_path=training_metadata_path
+            metadata_path=training_metadata_path
         )
         run_id = os.environ["RUN_ID"]
     except KeyError as e:
@@ -401,9 +404,10 @@ def bour_weighted_bce_loss(outputs: torch.Tensor, labels: torch.Tensor, p: np.nd
         * torch.clamp(torch.log(1.0 - outputs_clamped), min=-100)
     )
 
-    # Sum over the classes and average over the batch and number of classes
+    # Sum over the classes and average over the number of classes and batch
     C = outputs.size(-1)
-    loss = -torch.sum(term1 + term2) / C
+    B = outputs.size(0)
+    loss = -torch.sum(term1 + term2) / (C * B)
     return loss
 
 
@@ -1761,15 +1765,15 @@ def main():
 
     # dummy_run(config=config)
 
-    run_hyperparameter_search(config=config)
+    # run_hyperparameter_search(config=config)
 
     # run_training(config=config, json_config_path="./params.json")
 
-    # run_retraining(
-    #     config=config,
-    #     json_config_path="./params.json",
-    #     previous_run_id=config.run_id,
-    # )
+    run_retraining(
+        config=config,
+        json_config_path="./params.json",
+        previous_run_id=config.run_id,
+    )
 
 
 if __name__ == "__main__":
