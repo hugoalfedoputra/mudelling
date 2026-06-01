@@ -11,3 +11,4 @@ train*.py
 testing_logs*.txt
 params*.json
 !params.example.json
+f_train*.py
