@@ -8,3 +8,6 @@ docker-compose.yml
 training_logs.txt
 training_logs*.txt
 train*.py
+testing_logs*.txt
+params*.json
+!params.example.json

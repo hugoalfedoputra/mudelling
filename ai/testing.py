@@ -26,9 +26,11 @@ from dataclasses import dataclass
 # READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
 # ====================================================================================================
 
-EXPERIMENT_IDENT = "TEST_15s"
-# BACKEND_TYPES = ["CNN", "GRU", "ATTN"]
-BACKEND_TYPES = ["ATTN"]
+EXPERIMENT_IDENT = "v3_TEST_15s"
+SKIP_TESTING = True  # to only show the stats
+# SKIP_TESTING = False
+BACKEND_TYPES = ["CNN", "GRU", "ATTN"]
+# BACKEND_TYPES = ["ATTN"]
 
 # Import from existing train.py
 from train import (
@@ -380,23 +382,34 @@ def main():
         for i, r in enumerate(runs_to_evaluate):
             pr_auc = r.data.metrics.get("val_macro_pr_auc", "N/A")
             backend_type = r.data.params.get("backend_type", "N/A")
+
+            backend_dropout = float(r.data.params.get("backend_dropout", 0.0))
+            learning_rate = float(r.data.params.get("learning_rate", 0.0))
+            epochs = int(r.data.params.get("epochs", 0))
+
             print(
                 f"\t{i+1}. Run ID: {r.info.run_id} | backend type: {backend_type} | val macro PR-AUC: {pr_auc}"
             )
-
-        # Download the test split
-        dl.main(split="test")
+            print(
+                f"\t   Run name: {r.data.tags.get("mlflow.runName", "N/A")} | BE dropout: {backend_dropout} | LR: {learning_rate} | epoch: {epochs}"
+            )
 
     # Evaluate each collected run sequentially
-    for run in runs_to_evaluate:
-        evaluate_run(
-            config=config,
-            run=run,
-            tag2idx=tag2idx,
-            vocab=vocab,
-            num_classes=num_classes,
-            device=device,
-        )
+    if not SKIP_TESTING:
+        # Download the test split
+        # dl.main(split="test")
+
+        for run in runs_to_evaluate:
+            evaluate_run(
+                config=config,
+                run=run,
+                tag2idx=tag2idx,
+                vocab=vocab,
+                num_classes=num_classes,
+                device=device,
+            )
+    else:
+        print(">>> SKIP_TESTING is True.")
 
 
 if __name__ == "__main__":

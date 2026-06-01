@@ -32,12 +32,19 @@ from dataclasses import dataclass
 # READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
 # READ AND RECONFIGURE THE GLOBALS FIRST BEFORE SHIPPING CODE
 # =================================================================================================
+# This is tied to ../prep/preprocessing.py; hard-coded so as to not issues
 N_MEL_BANDS = 96
 
-IS_TESTING = False
-# IS_TESTING = True
-EXPERIMENT_IDENT = "v3_15s"
+# IS_TESTING = False
+IS_TESTING = True
+
+EXPERIMENT_IDENT = "f1_TEST_15s"
 EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
+BACKUP_FREQUENCY = 5
+
+# This is ONLY for training/retraining a model and not tuning
+JSON_CONFIG_PATH = "./params_cnn_TESTING.json"
+RUN_ID = "15fc890603d149e4918a1c6cfbf9aa48"
 
 N_LAYERS = 3
 
@@ -1264,6 +1271,57 @@ def _train_one_epoch(
     return avg_epoch_loss
 
 
+def _save_and_log_to_mlflow(
+    params,
+    epoch,
+    previous_run_id,
+    model,
+    optimizer,
+    train_avg_loss,
+    current_pr_auc,
+    is_best=False,
+):
+    """
+    This must be run inside a mlflow with block
+    """
+
+    if is_best:
+        model_name = f"BEST_{params['backend_type']}_model_epoch_{epoch}"
+    else:
+        model_name = f"{params['backend_type']}_model_epoch_{epoch}"
+
+    # mlflow.pytorch.log_model(model, latest_model_name)
+    # print(
+    #     f"Latest training phase complete and logged to MLflow: ({latest_model_name})"
+    # )
+
+    # Save locally then save as MLflow artifact
+    if previous_run_id is None:
+        checkpoint_dir = (
+            f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}"
+        )
+    else:
+        checkpoint_dir = (
+            f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{previous_run_id}"
+        )
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    local_ckpt_path = f"{checkpoint_dir}/{model_name}.pth"
+
+    torch.save(
+        {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "avg_train_loss": train_avg_loss,
+            "val_pr_auc": current_pr_auc,
+        },
+        local_ckpt_path,
+    )
+
+    # Upload the raw .pth file as an MLflow artifact
+    mlflow.log_artifact(local_ckpt_path, artifact_path="training_checkpoints")
+
+
 # region Tuning
 def run_hyperparameter_search(config: TrainingConfig):
     """
@@ -1469,13 +1527,13 @@ def run_training(
     with open(json_config_path, "r") as f:
         params = json.loads(f.read())
 
-    experiment_name = (
-        f"{config.melspec_chunk_length}_chunk_music_model_{params['backend_type']}"
-    )
-    mlflow.set_experiment(experiment_name)
-
     run_type = "retrain" if resume_checkpoint is not None else "train"
     dynamic_run_name = f"{run_type}_{params['backend_type']}_{int(time.time())}"
+
+    experiment_name = (
+        f"{EXPERIMENT_IDENT}_{run_type}_chunk_music_model_{params['backend_type']}"
+    )
+    mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name=dynamic_run_name):
         mlflow.log_params(params)
@@ -1615,56 +1673,70 @@ def run_training(
 
             # Just in case the model degrades, checkpoint after the first epoch regardless
             if len(val_macro_pr_auc_history) == 0:
-                best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
-                mlflow.pytorch.log_model(model, best_model_name)
-                print(f"New best model found and logged to MLflow: ({best_model_name})")
+                _save_and_log_to_mlflow(
+                    params=params,
+                    epoch=epoch,
+                    previous_run_id=previous_run_id,
+                    model=model,
+                    optimizer=optimizer,
+                    train_avg_loss=train_avg_loss,
+                    current_pr_auc=current_pr_auc,
+                )
+                # best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
+                # mlflow.pytorch.log_model(model, best_model_name)
+                print(f"Model after first epoch of {run_type}ing logged to MLflow!")
+
+            if epoch % BACKUP_FREQUENCY == 0:
+                _save_and_log_to_mlflow(
+                    params=params,
+                    epoch=epoch,
+                    previous_run_id=previous_run_id,
+                    model=model,
+                    optimizer=optimizer,
+                    train_avg_loss=train_avg_loss,
+                    current_pr_auc=current_pr_auc,
+                )
+                print(
+                    f"Model backup at epoch {epoch} of {run_type}ing logged to MLflow!"
+                )
 
             # Checkpoint based on if the PR-AUC score is maximum against previous epochs
             # This is the same exact code as the if block above
             if len(val_macro_pr_auc_history) > 1:
                 if current_pr_auc > max(val_macro_pr_auc_history[:-1]):
-                    best_model_name = (
-                        f"best_{params['backend_type']}_model_epoch_{epoch}"
+                    _save_and_log_to_mlflow(
+                        params=params,
+                        epoch=epoch,
+                        previous_run_id=previous_run_id,
+                        model=model,
+                        optimizer=optimizer,
+                        train_avg_loss=train_avg_loss,
+                        current_pr_auc=current_pr_auc,
+                        is_best=True,
                     )
-                    mlflow.pytorch.log_model(model, best_model_name)
+
+                    best_model_name = (
+                        f"BEST_{params['backend_type']}_model_epoch_{epoch}"
+                    )
+                    # mlflow.pytorch.log_model(model, best_model_name)
                     print(
-                        f"New best model found and logged to MLflow: ({best_model_name})"
+                        f"New BEST model found of {run_type}ing and logged to MLflow: ({best_model_name})"
                     )
 
             # 6. Checkpoint latest model
             if epoch == epochs - 1:
-                latest_model_name = (
-                    f"{params['backend_type']}_model_latest_epoch_{epoch}"
+                _save_and_log_to_mlflow(
+                    params=params,
+                    epoch=epoch,
+                    previous_run_id=previous_run_id,
+                    model=model,
+                    optimizer=optimizer,
+                    train_avg_loss=train_avg_loss,
+                    current_pr_auc=current_pr_auc,
                 )
-                mlflow.pytorch.log_model(model, latest_model_name)
                 print(
-                    f"Latest training phase complete and logged to MLflow: ({latest_model_name})"
+                    f"Full PyTorch checkpoint saved and uploaded as MLflow artifact after epoch {epoch}"
                 )
-
-                # Save locally then save as MLflow artifact
-                if previous_run_id is None:
-                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}"
-                else:
-                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{previous_run_id}"
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                local_ckpt_path = f"{checkpoint_dir}/resume_checkpoint.pth"
-
-                torch.save(
-                    {
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "avg_train_loss": train_avg_loss,
-                        "val_pr_auc": current_pr_auc,
-                    },
-                    local_ckpt_path,
-                )
-
-                # Upload the raw .pth file as an MLflow artifact
-                mlflow.log_artifact(
-                    local_ckpt_path, artifact_path="training_checkpoints"
-                )
-                print(f"Full PyTorch checkpoint saved and uploaded as MLflow artifact!")
 
         print("\nTraining run complete!")
         print(">>> Stats dump:")
@@ -1677,13 +1749,29 @@ def run_training(
 def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_id: str):
     print(f"Downloading checkpoint artifact from Run ID: {previous_run_id}...")
 
+    mlflow.set_tracking_uri(config.mlflow_tracking_uri)
+    client = mlflow.tracking.MlflowClient()
+    run = client.get_run(previous_run_id)
+
+    run_name = run.data.tags.get("mlflow.runName", None)
+    if run_name is not None:
+        run_number = str(run_name).split("_")[-1]
+    else:
+        raise Exception("Model run name is None")
+
+    epoch = run.data.params.get("epochs", None)
+    if epoch is not None:
+        epoch_number = int(epoch) - 1
+    else:
+        raise Exception("Model epoch is None")
+
     # This downloads to a temporary path managed by MLflow/local temp.
     # From the way this is, there can only be one checkpoint at a time and a new checkpoint
     # download will override the old one
     local_checkpoint_path = mlflow.artifacts.download_artifacts(
         run_id=previous_run_id,
-        artifact_path="training_checkpoints/resume_checkpoint.pth",
-        dst_path=f"{LOCAL_TEMP_FOLDER}/{previous_run_id}/downloaded_checkpoints",
+        artifact_path=f"tuning_checkpoint_epoch_{epoch_number}/tuning_run_{run_number}_checkpoint_{epoch_number}.pth",
+        dst_path=f"{LOCAL_TEMP_FOLDER}/{LOCAL_MODEL_FOLDER}/retrain/{previous_run_id}/tuning_run_{run_number}_checkpoint_{epoch_number}.pth",
     )
 
     print(
@@ -1855,15 +1943,15 @@ def main():
 
     # dummy_run(config=config)
 
-    run_hyperparameter_search(config=config)
+    # run_hyperparameter_search(config=config)
 
-    # run_training(config=config, json_config_path="./params.json")
+    # run_training(config=config, json_config_path=JSON_CONFIG_PATH)
 
-    # run_retraining(
-    #     config=config,
-    #     json_config_path="./params.json",
-    #     previous_run_id=config.run_id,
-    # )
+    run_retraining(
+        config=config,
+        json_config_path=JSON_CONFIG_PATH,
+        previous_run_id=RUN_ID,
+    )
 
 
 if __name__ == "__main__":
