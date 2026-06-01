@@ -44,7 +44,7 @@ BACKUP_FREQUENCY = 5
 
 # This is ONLY for training/retraining a model and not tuning
 JSON_CONFIG_PATH = "./params_cnn_TESTING.json"
-RUN_ID = "15fc890603d149e4918a1c6cfbf9aa48"
+RUN_ID = "4bd0d02bc54945d0b49cce579dd141e1"
 
 N_LAYERS = 3
 
@@ -437,7 +437,17 @@ def bour_weighted_bce_loss(outputs: torch.Tensor, labels: torch.Tensor, p: np.nd
     # Sum over the classes and average over the number of classes and batch
     C = outputs.size(-1)
     B = outputs.size(0)
+
+    if int(C) == 0 or int(B) == 0:
+        print("\n>>> CHANNEL OR BATCH SIZE IS ZERO\n")
+        loss = -torch.mean(term1 + term2) * 0 + eps
+        return loss
+
     loss = -torch.sum(term1 + term2) / (C * B)
+
+    if torch.isnan(loss):
+        loss = torch.tensor(eps)
+
     return loss
 
 
@@ -1891,6 +1901,7 @@ def _validate_model(
         # There's been cases where the y_score is NaN and average_precision_score is throwing
         # ValueError of it receiving an input of NaN
         if np.isnan(y_score).any():
+            print(">>> PREDICTION IS NAN")
             pr_auc = 0.0  # PR baseline
             roc_auc = 0.5  # Random guessing baseline
         elif len(np.unique(y_true)) > 1:
@@ -1898,6 +1909,7 @@ def _validate_model(
             roc_auc = roc_auc_score(y_true, y_score)
         else:
             # Handle edge cases where a rare label might not exist in the validation split
+            print(">>> LABEL DOES NOT EXIST IN VAL SPLIT")
             pr_auc = 0.0
             roc_auc = 0.5
 
@@ -1915,10 +1927,6 @@ def _validate_model(
     return metrics
 
 
-# endregion
-
-
-# region Testing
 # endregion
 
 
