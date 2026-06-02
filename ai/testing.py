@@ -97,7 +97,7 @@ def load_testing_config() -> TestingConfig:
         search_experiment_name = os.environ.get("SEARCH_EXPERIMENT_NAME", "").strip()
         top_n_models = int(os.environ.get("TOP_N_MODELS", "3"))
 
-        if not target_run_id and not search_experiment_name:
+        if not target_run_id and not search_experiment_name and len(RUN_IDS) > 0:
             raise Exception(
                 "You must provide either TEST_RUN_ID or SEARCH_EXPERIMENT_NAME in .env"
             )
