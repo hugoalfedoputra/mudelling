@@ -97,10 +97,11 @@ def load_testing_config() -> TestingConfig:
         search_experiment_name = os.environ.get("SEARCH_EXPERIMENT_NAME", "").strip()
         top_n_models = int(os.environ.get("TOP_N_MODELS", "3"))
 
-        if not target_run_id and not search_experiment_name and len(RUN_IDS) > 0:
-            raise Exception(
-                "You must provide either TEST_RUN_ID or SEARCH_EXPERIMENT_NAME in .env"
-            )
+        if len(RUN_IDS) == 0:
+            if not target_run_id and not search_experiment_name:
+                raise Exception(
+                    "You must provide either TEST_RUN_ID or SEARCH_EXPERIMENT_NAME in .env"
+                )
 
         dataset_relative_frequencies = _calculate_dataset_relative_frequencies(
             metadata_path=test_csv
