@@ -14,3 +14,13 @@
 ## Testing
 1. **.env** (when TESTING CODE, change the validation and/or test CSVs)
 2. **testing.py** (globals and hardcoded filter values)
+
+## mlflow_pgdump
+
+```
+docker exec -it mlflow-postgres psql -U ${USER} -d ${DB} -c "COPY (SELECT * FROM metrics WHERE run_uuid='blabla' ORDER BY step) TO STDOUT WITH CSV HEADER" > blabla_history.csv
+```
+
+```
+scp -i /path/to/pk server@123.456.123.456:/path/to/blabla_history.csv /path/to/skripsi-code/ai/mlflow_pgdump/blabla_history.csv
+```

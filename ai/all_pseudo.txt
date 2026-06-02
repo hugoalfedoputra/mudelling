@@ -1,0 +1,239 @@
+procedure preprocess(subfolder, nama_berkas, split, panjang_potongan)
+{ Prosedur untuk memuat berkas musik, memotongnya menjadi beberapa bagian dengan durasi panjang_potongan (dalam detik), menghitung spektogram log-mel, menormalisasi, lalu menyimpan potongannya di direktori lokal. subfolder misalnya "00", "01", dst. sesuai dengan struktur direktori pada dataset MTG-Jamendo. split misalnya "train", "validation", atau "test" yaitu pembagian dari dataset. }
+
+DEKLARASI
+integer sampel_potongan
+integer bawah
+integer atas
+integer i
+integer j
+float[] y ᐅ nilai-nilai amplitudo yang dimuat dari berkas musik
+integer sr ᐅ nilai sample rate untuk memuat berkas
+float[] si ᐅ hasil penghitungan spektogram mel
+float[] s_dbi ᐅ hasil penghitungan spektogram log-mel
+float[] s_dbi_norm ᐅ hasil normalisasi spektogram log-mel
+float[] melspecs ᐅ kumpulan normalisasi spektogram log-mel dari setiap potongan pada satu berkas musik
+
+DESKRIPSI
+sampel_potongan <- 16000 * panjang_potongan
+y, sr <- muat_berkas_musik(subfolder + "/" + nama_berkas, 16000) ᐅ muat satu berkas musik
+for i <- 0 to (len(y) div sampel_potongan) - 1 do
+    bawah <- i * sampel_potongan
+    atas <- (i + 1) * sampel_potongan
+    if atas > len(y) then
+        atas <- -1 ᐅ tetapkan ke indeks potongan terakhir jika sisa sampel kurang dari sampel_potongan
+    si <- hitung_melspektogram(y[bawah..atas], sr, 96) ᐅ ekstraksi fitur menjadi 96 pita mel
+    s_dbi <- amplitudo_ke_db(si, 10e-12) ᐅ konversi amplitudo menjadi desibel (log-mel)
+    for j <- 0 to Baris(s_dbi) - 1 do
+        s_dbi_norm[j] <- z_norm(s_dbi[j]) ᐅ normalisasi Z-score pada setiap pita mel
+    end for
+    melspecs.append(s_dbi_norm)
+end for
+buat_direktori_lokal("./subfolder/split")
+for i <- 0 to len(melspecs) - 1 do
+    simpan_npy(melspecs[i], subfolder, split, nama_berkas, i) ᐅ simpan tiap potongan sebagai berkas .npy
+end for
+
+
+procedure train_model(training_params)
+{ Prosedur untuk memuat dataset, melatih model sampai batas epoch tertentu, menghitung nilai loss, melakukan validasi, dan menyimpan checkpoint model ke direktori lokal. }
+
+DEKLARASI
+DataLoader dataset_latih
+integer epoch
+integer max_epoch
+integer indeks_batch
+tensor melspecs
+tensor labels
+tensor outputs
+float loss
+float rerata_loss
+float nilai_PRAUC
+float[] nilai_nilai_PRAUC
+
+DESKRIPSI
+frontend <- ModulFrontEnd(config)
+if training_params["backend_type"] = "CNN" then
+    backend <- ModulCNN(training_params)
+else if training_params["backend_type"] = "GRU" then
+    backend <- ModulGRU(training_params)
+else if training_params["backend_type"] = "ATTN" then
+    backend <- ModulATTN(training_params)
+classifier <- ModulClassifier(training_params, banyak_label)
+model <- Model(frontend, backend, classifier)
+optimizer <- Adam()
+nilai_nilai_PRAUC <- []
+for epoch <- 0 to max_epoch - 1 do
+    rerata_loss <- 0.0
+    for indeks_batch <- 1 to len(dataset_latih) do
+        melspecs, labels <- muat_batch(dataset_latih, indeks_batch)
+        outputs <- model(melspecs) ᐅ feed-forward
+        loss <- hitung_loss(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        rerata_loss <- rerata_loss + loss
+    end for
+    rerata_loss <- rerata_loss / len(dataset_latih)
+    nilai_PRAUC <- validate_model(model)
+    nilai_nilai_PRAUC.append(nilai_PRAUC)
+    if nilai_PRAUC > max(nilai_nilai_PRAUC) then
+        checkpoint_model(model, optimizer, epoch, nilai_PRAUC)
+end for
+
+
+function validate_model(model, berkas_metadata_validation)
+{ Fungsi untuk melakukan inferensi pada split validasi, menggabungkan prediksi dari setiap potongan lagu, dan menghitung metrik evaluasi berupa PR-AUC, ROC-AUC. }
+
+DEKLARASI
+DataFrame df
+array[] all_outputs
+array[] all_music_labels
+tensor melspecs
+tensor label_tensor
+tensor outputs
+tensor output
+float[] y_score
+float[] y_true
+float[] pr_aucs
+float[] roc_aucs
+float pr_auc
+float roc_auc
+object metrics
+integer i
+
+DESKRIPSI
+banyak_label = 56
+df <- muat_csv(berkas_metadata_validation)
+for row in df do
+    melspecs <- muat_semua_potongan_npy(row)
+    label_tensor <- multi_hot_encoding(row, banyak_label)
+    outputs <- model(melspecs) ᐅ inferensi pada split validasi
+    output <- average(outputs, dimensi=0) ᐅ rata-ratakan prediksi tiap potongan menjadi satu vektor
+    all_outputs.append(output)
+    all_music_labels.append(label_tensor)
+end for
+for i <- 0 to banyak_label - 1 do
+    y_score <- all_outputs[:,i]
+    y_true <- all_music_labels[:,i]
+    pr_auc <- hitung_PRAUC(y_true, y_score)
+    roc_auc <- hitung_ROCAUC(y_true, y_score)
+    pr_aucs.append(pr_auc)
+    roc_aucs.append(roc_auc)
+end for
+metrics["macro_pr_auc"] <- average(pr_aucs)
+metrics["macro_roc_auc"] <- average(roc_aucs)
+return metrics
+
+
+procedure hyperparameter_tuning(berkas_metadata_validation)
+{ Prosedur untuk menguji berbagai kombinasi arsitektur dan hyperparameter (grid search), melatih setiap kombinasi model, melakukan validasi, dan menyimpan model pada direktori lokal pada interval tertentu. }
+
+DEKLARASI
+object params ᐅ matriks hyperparameter model untuk dicoba satu per satu
+object[] grid ᐅ seluruh kombinasi hyperparameter
+object metrics
+Model model
+ModulFrontEnd frontend
+Modul backend
+ModulClassifier classifier
+Adam optimizer
+DataLoader dataset_latih
+integer epoch
+integer max_epoch
+integer indeks_batch
+integer banyak_label
+tensor melspecs
+tensor labels
+tensor outputs
+float loss
+float current_pr_auc
+
+DESKRIPSI
+banyak_label <- 56
+grid <- ParameterGrid() ᐅ menghasilkan kombinasi hyperparameter
+for tiap params dalam grid do
+    dataset_latih <- DataLoader(config, params)
+    frontend <- ModulFrontEnd(config)
+    if params["backend_type"] = "CNN" then
+        backend <- ModulCNN(params)
+    else if params["backend_type"] = "GRU" then
+        backend <- ModulGRU(params)
+    else if params["backend_type"] = "ATTN" then
+        backend <- ModulATTN(params)
+    classifier <- ModulClassifier(params, banyak_label)
+    model <- Model(frontend, backend, classifier)
+    optimizer <- Adam(model, params)
+    max_epoch <- params["epochs"]
+    for epoch <- 0 to max_epoch - 1 do
+        for indeks_batch <- 1 to len(dataset_latih) do
+            melspecs, labels <- muat_batch(dataset_latih, indeks_batch)
+            outputs <- model(melspecs) ᐅ feed-forward
+            loss <- hitung_loss(outputs, labels)
+            loss.backward()
+            optimizer.step()
+        end for
+        metrics <- validate_model(mPengujianModelodel, berkas_metadata_validation)
+        current_pr_auc <- metrics["macro_pr_auc"]
+        if (epoch + 1) mod 10 = 0 atau epoch = max_epoch - 1 then
+            checkpoint_model(model, optimizer, epoch, current_pr_auc)
+    end for
+end for
+
+
+procedure test_model(config, berkas_metadata_testing, checkpoint_params)
+{ Prosedur untuk membuat ulang model, memuat bobot dari checkpoint, melakukan inferensi pada split pengujian, dan menghitung metrik evaluasi PR-AUC dan ROC-AUC. }
+
+DEKLARASI
+Model model
+ModulFrontEnd frontend
+Modul backend
+ModulClassifier classifier
+DataFrame df
+tensor melspecs
+tensor label_tensor
+tensor outputs
+tensor output
+array[] all_outputs
+array[] all_music_labels
+float[] y_score
+float[] y_true
+float[] pr_aucs
+float[] roc_aucs
+float test_macro_pr_auc
+float test_macro_roc_auc
+float pr_auc
+float roc_auc
+integer i
+
+DESKRIPSI
+banyak_label <- 56
+frontend <- ModulFrontEnd(config)
+if checkpoint_params["backend_type"] = "CNN" then
+    backend <- ModulCNN(checkpoint_params)
+else if checkpoint_params["backend_type"] = "GRU" then
+    backend <- ModulGRU(checkpoint_params)
+else if checkpoint_params["backend_type"] = "ATTN" then
+    backend <- ModulATTN(checkpoint_params)
+classifier <- ModulClassifier(checkpoint_params, banyak_label)
+model <- Model(frontend, backend, classifier)
+model <- muat_bobot_model(checkpoint_params) ᐅ muat bobot model berdasarkan konfigurasi yang disimpan pada checkpoint
+df <- muat_csv(berkas_metadata_testing)
+for row in df do
+    melspecs <- muat_semua_potongan_npy(row)
+    label_tensor <- multi_hot_encoding(row, banyak_label)
+    outputs <- model(melspecs) ᐅ inferensi pada split validasi
+    output <- average(outputs, dimensi=0) ᐅ rata-ratakan prediksi tiap potongan menjadi satu vektor
+    all_outputs.append(output)
+    all_music_labels.append(label_tensor)
+end for
+for i <- 0 to banyak_label - 1 do
+    y_score <- all_outputs[:,i]
+    y_true <- all_music_labels[:,i]
+    pr_auc <- hitung_PRAUC(y_true, y_score)
+    roc_auc <- hitung_ROCAUC(y_true, y_score)
+    pr_aucs.append(pr_auc)
+    roc_aucs.append(roc_auc)
+end for
+test_macro_pr_auc <- average(pr_aucs)
+test_macro_roc_auc <- average(roc_aucs)
+Output test_macro_pr_auc, test_macro_roc_auc

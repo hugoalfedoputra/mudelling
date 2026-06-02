@@ -12,3 +12,4 @@ testing_logs*.txt
 params*.json
 !params.example.json
 f_train*.py
+mlflow_pgdump

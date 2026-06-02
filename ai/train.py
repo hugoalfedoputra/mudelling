@@ -1651,8 +1651,8 @@ def run_training(
                 device=device,
                 epoch=epoch,
             )
-            print(f"Epoch [{epoch+1}/{epochs}] - Train Loss: {train_avg_loss:.8f}")
-            mlflow.log_metric("train_loss", train_avg_loss, step=epoch)
+            print(f"Epoch [{epoch+1}/{epochs}] - Avg train Loss: {train_avg_loss:.8f}")
+            # mlflow.log_metric("train_loss", train_avg_loss, step=epoch)
 
             # 2. Validate
             print("Running validation inference...")

@@ -30,6 +30,16 @@ EXPERIMENT_IDENT = "v3_TEST_15s"
 SKIP_TESTING = True  # to only show the stats
 # SKIP_TESTING = False
 BACKEND_TYPES = ["CNN", "GRU", "ATTN"]
+RUN_IDS = [
+    "0c0d66e93e524c959f92f82156a97011",  # CNN
+    "0b159a90989548dba96a7176e0721050",  # GRU
+    "91c6d578c3224667a208a9ce24612db6",  # ATTN
+]
+PTH_PATHS = [
+    "training_checkpoints/CNN_model_epoch_0.pth",
+    "training_checkpoints/BEST_GRU_model_epoch_7.pth",
+    "training_checkpoints/BEST_ATTN_model_epoch_8.pth",
+]
 # BACKEND_TYPES = ["ATTN"]
 
 # Import from existing train.py
@@ -156,7 +166,9 @@ def extract_epoch_from_filename(filename: str) -> int:
     return int(match.group(1)) if match else -1
 
 
-def evaluate_run(config: TestingConfig, run, tag2idx, vocab, num_classes, device):
+def evaluate_run(
+    config: TestingConfig, run, tag2idx, vocab, num_classes, device, pth_path=None
+):
     """Encapsulated testing logic for a single MLflow Run"""
     run_id = run.info.run_id
     print(f"\n{'='*80}\n>>> Testing Run ID: {run_id}\n{'='*80}")
@@ -186,6 +198,9 @@ def evaluate_run(config: TestingConfig, run, tag2idx, vocab, num_classes, device
     # Sort candidates by epoch (highest epoch last) or fallback to first found if no epoch in string
     pth_candidates.sort(key=extract_epoch_from_filename)
     best_pth_artifact_path = pth_candidates[-1]
+
+    if pth_path is not None:
+        best_pth_artifact_path = pth_path
 
     print(f"Downloading checkpoint: {best_pth_artifact_path}")
     local_checkpoint_path = mlflow.artifacts.download_artifacts(
@@ -353,6 +368,11 @@ def main():
         print(f"Specific TEST_RUN_ID provided. Fetching Run: {config.target_run_id}")
         run = client.get_run(config.target_run_id)
         runs_to_evaluate.append(run)
+    elif config.search_experiment_name == "":
+        print(f"Fetching models from hardcoded globals..")
+        for run_id in RUN_IDS:
+            run = client.get_run(run_id=run_id)
+            runs_to_evaluate.append(run)
     else:
         print(f"Programmatic search for experiment: '{config.search_experiment_name}'")
         experiment = client.get_experiment_by_name(config.search_experiment_name)
@@ -378,27 +398,43 @@ def main():
 
             runs_to_evaluate.extend(runs)
 
-        # Quick printout of what models were picked up before running the real code"
-        for i, r in enumerate(runs_to_evaluate):
-            pr_auc = r.data.metrics.get("val_macro_pr_auc", "N/A")
-            backend_type = r.data.params.get("backend_type", "N/A")
+    # Quick printout of what models were picked up before running the real code
+    for i, r in enumerate(runs_to_evaluate):
+        pr_auc = r.data.metrics.get("val_macro_pr_auc", "N/A")
+        backend_type = r.data.params.get("backend_type", "N/A")
 
-            backend_dropout = float(r.data.params.get("backend_dropout", 0.0))
-            learning_rate = float(r.data.params.get("learning_rate", 0.0))
-            epochs = int(r.data.params.get("epochs", 0))
+        backend_dropout = float(r.data.params.get("backend_dropout", 0.0))
+        learning_rate = float(r.data.params.get("learning_rate", 0.0))
+        epochs = int(r.data.params.get("epochs", 0))
 
-            print(
-                f"\t{i+1}. Run ID: {r.info.run_id} | backend type: {backend_type} | val macro PR-AUC: {pr_auc}"
-            )
-            print(
-                f"\t   Run name: {r.data.tags.get("mlflow.runName", "N/A")} | BE dropout: {backend_dropout} | LR: {learning_rate} | epoch: {epochs}"
-            )
+        print(
+            f"\t{i+1}. Run ID: {r.info.run_id} | backend type: {backend_type} | val macro PR-AUC: {pr_auc}"
+        )
+        print(
+            f"\t   Run name: {r.data.tags.get("mlflow.runName", "N/A")} | BE dropout: {backend_dropout} | LR: {learning_rate} | epoch: {epochs}"
+        )
 
     # Evaluate each collected run sequentially
-    if not SKIP_TESTING:
+    if SKIP_TESTING:
+        print(">>> SKIP_TESTING is True.")
+        return
+    else:
         # Download the test split
         # dl.main(split="test")
+        pass
 
+    if len(PTH_PATHS) > 0:
+        for i, run in enumerate(runs_to_evaluate):
+            evaluate_run(
+                config=config,
+                run=run,
+                tag2idx=tag2idx,
+                vocab=vocab,
+                num_classes=num_classes,
+                device=device,
+                pth_path=PTH_PATHS[i],
+            )
+    else:
         for run in runs_to_evaluate:
             evaluate_run(
                 config=config,
@@ -408,8 +444,6 @@ def main():
                 num_classes=num_classes,
                 device=device,
             )
-    else:
-        print(">>> SKIP_TESTING is True.")
 
 
 if __name__ == "__main__":
