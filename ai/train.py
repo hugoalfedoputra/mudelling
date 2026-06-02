@@ -446,7 +446,7 @@ def bour_weighted_bce_loss(outputs: torch.Tensor, labels: torch.Tensor, p: np.nd
     loss = -torch.sum(term1 + term2) / (C * B)
 
     if torch.isnan(loss):
-        loss = torch.tensor(eps)
+        loss = (torch.nan_to_num(outputs) * 0.0).sum() + eps
 
     return loss
 
@@ -1257,7 +1257,7 @@ def _train_one_epoch(
         loss.backward()
 
         # region clip_grad_norm
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
         # endregion
 
         optimizer.step()
