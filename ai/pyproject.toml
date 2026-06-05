@@ -1,7 +1,7 @@
 [project]
 name = "ai"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "AI training code"
 readme = "README.md"
 requires-python = "==3.12.12"
 dependencies = [
@@ -12,17 +12,90 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "rclone-python>=0.1.24",
     "scikit-learn>=1.8.0",
-    "torch>=2.12.0",
-    "torchinfo>=1.8.0",
-    "torchvision>=0.27.0",
 ]
 
 [dependency-groups]
-dev = [
-    "ipykernel>=7.2.0",
+dev = ["ipykernel>=7.2.0"]
+
+[project.optional-dependencies]
+cpu = ["torch>=2.12.0", "torchvision>=0.27.0", "torchinfo>=1.8.0"]
+cu132 = [
+    "torch>=2.12.0",
+    "torchvision>=0.27.0",
+    "torchinfo>=1.8.0",
+    "fbgemm-gpu",
+    "pytorch-triton",
+]
+cu126 = [
+    "torch>=2.12.0",
+    "torchvision>=0.27.0",
+    "torchinfo>=1.8.0",
+    "fbgemm-gpu",
+    "pytorch-triton",
+]
+rocm72 = [
+    "torch>=2.12.0; sys_platform == 'linux'",
+    "torchvision>=0.27.0; sys_platform == 'linux'",
+    "torchinfo>=1.8.0; sys_platform == 'linux'",
+    "fbgemm-gpu; sys_platform == 'linux'",
+    "triton-rocm; sys_platform == 'linux'",
+    "pytorch-triton-rocm; sys_platform == 'linux'",
+]
+
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu132" },
+        { extra = "cu126" },
+        { extra = "rocm72" },
+    ],
+]
+
+environments = ["sys_platform == 'win32'", "sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu132", extra = "cu132" },
+    { index = "pytorch-cu126", extra = "cu126" },
+    { index = "pytorch-rocm72", extra = "rocm72" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu132", extra = "cu132" },
+    { index = "pytorch-cu126", extra = "cu126" },
+    { index = "pytorch-rocm72", extra = "rocm72" },
+]
+fbgemm-gpu = [
+    { index = "pytorch-cu132", extra = "cu132" },
+    { index = "pytorch-cu126", extra = "cu126" },
+    { index = "pytorch-rocm72", extra = "rocm72" },
+]
+triton-rocm = [{ index = "pytorch-rocm72", extra = "rocm72" }]
+pytorch-triton-rocm = [{ index = "pytorch-rocm72", extra = "rocm72" }]
+pytorch-triton = [
+    { index = "pytorch-cu132", extra = "cu132" },
+    { index = "pytorch-cu126", extra = "cu126" },
 ]
 
 [[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm72"
 url = "https://download.pytorch.org/whl/rocm7.2"
-# url = "https://download.pytorch.org/whl/cu132"
-# url = "https://download.pytorch.org/whl/cu126"
+explicit = true
