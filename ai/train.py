@@ -11,7 +11,6 @@ import torch.optim as optim
 import download_melspecs as dl
 import mlflow
 import mlflow.artifacts
-import mlflow.pytorch
 from sklearn.model_selection import ParameterGrid
 from sklearn.metrics import roc_auc_score, average_precision_score
 from pathlib import Path
@@ -38,7 +37,7 @@ N_MEL_BANDS = 96
 # IS_TESTING = False
 IS_TESTING = True
 
-EXPERIMENT_IDENT = "f1_TEST_15s"
+EXPERIMENT_IDENT = "v4_15s"
 EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
 BACKUP_FREQUENCY = 5
 
@@ -93,6 +92,7 @@ TUNING_PARAM_GRID = {
     "learning_rate": [1e-2, 1e-3, 1e-4],
     "classifier_dropout": [0.0],
     "backend_dropout": [0.0, 0.1, 0.3, 0.5],
+    "post_global_dropout": [0.5],
     #
     # TESTING:
     # "batch_size": [32],
@@ -818,7 +818,7 @@ class Frontend(nn.Module):
 
 # region CNN BE
 class CNNBackend(nn.Module):
-    def __init__(self, input_shape, p_dropout=0.1):
+    def __init__(self, input_shape, p_dropout=0.1, post_global_dropout=0.5):
         super(CNNBackend, self).__init__()
         # input_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
@@ -848,7 +848,7 @@ class CNNBackend(nn.Module):
             padding=(3, 0),
         )
         self.bn_conv3 = nn.BatchNorm2d(CNN_N_FILTERS)
-        self.dropout3 = nn.Dropout(p=p_dropout)
+        self.dropout3 = nn.Dropout(p=post_global_dropout)
 
         self.apply(init_conv_linear_weights)
 
@@ -894,6 +894,7 @@ class GRUBackend(nn.Module):
         input_shape,
         hidden_size=GRU_HIDDEN_SIZE,
         p_dropout=0.1,
+        post_global_dropout=0.5,
         is_bidirectional=False,
     ):
         super(GRUBackend, self).__init__()
@@ -936,7 +937,7 @@ class GRUBackend(nn.Module):
         )
 
         self.ln3 = nn.LayerNorm(normalized_shape=D * hidden_size)
-        self.dropout3 = nn.Dropout(p=p_dropout)
+        self.dropout3 = nn.Dropout(p=post_global_dropout)
 
         # Weight initialisation uses defalt uniform dist. but bias set to 0
         nn.init.constant_(torch.Tensor(self.gru1.bias_ih_l0), 0)
@@ -982,6 +983,7 @@ class AttentionBackend(nn.Module):
         d_model=ATTN_LIN_PROJ,
         n_heads=ATTN_N_HEADS,
         p_dropout=0.1,
+        post_global_dropout=0.5,
         num_layers=1,
         use_rope=False,
     ):
@@ -1037,6 +1039,8 @@ class AttentionBackend(nn.Module):
             self.encoder_layer, num_layers=num_layers
         )
 
+        self.dropout3 = nn.Dropout(p=post_global_dropout)
+
         # Weight initialisation uses default Xavier uniform
         nn.init.constant_(self.encoder_layer.self_attn.in_proj_bias.data, 0)
         nn.init.constant_(self.encoder_layer.self_attn.out_proj.bias.data, 0)
@@ -1068,6 +1072,8 @@ class AttentionBackend(nn.Module):
         out_max = F.adaptive_max_pool1d(out, 1).squeeze(2)  # ->[B, 464]
 
         out_cat = torch.cat([out_mean, out_max], dim=1)  # -> [B, 928]
+        out_cat = self.dropout3(out_cat)
+
         return out_cat
 
 
@@ -1405,12 +1411,16 @@ def run_hyperparameter_search(config: TrainingConfig):
 
             if params["backend_type"] == "CNN":
                 backend = CNNBackend(
-                    input_shape=frontend_out.shape, p_dropout=params["backend_dropout"]
+                    input_shape=frontend_out.shape,
+                    p_dropout=params["backend_dropout"],
+                    post_global_dropout=params["post_global_dropout"],
                 )
                 backend_out_features = CNN_N_FILTERS * 2
             elif params["backend_type"] == "GRU":
                 backend = GRUBackend(
-                    input_shape=frontend_out.shape, p_dropout=params["backend_dropout"]
+                    input_shape=frontend_out.shape,
+                    p_dropout=params["backend_dropout"],
+                    post_global_dropout=params["post_global_dropout"],
                 )
                 backend_out_features = GRU_HIDDEN_SIZE * 2
             elif params["backend_type"] == "ATTN":
@@ -1420,6 +1430,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     d_model=ATTN_LIN_PROJ,
                     n_heads=ATTN_N_HEADS,
                     p_dropout=params["backend_dropout"],
+                    post_global_dropout=params["post_global_dropout"],
                     use_rope=USE_ROPE,
                 )
                 backend_out_features = ATTN_LIN_PROJ * 2
@@ -1951,15 +1962,15 @@ def main():
 
     # dummy_run(config=config)
 
-    # run_hyperparameter_search(config=config)
+    run_hyperparameter_search(config=config)
 
     # run_training(config=config, json_config_path=JSON_CONFIG_PATH)
 
-    run_retraining(
-        config=config,
-        json_config_path=JSON_CONFIG_PATH,
-        previous_run_id=RUN_ID,
-    )
+    # run_retraining(
+    #     config=config,
+    #     json_config_path=JSON_CONFIG_PATH,
+    #     previous_run_id=RUN_ID,
+    # )
 
 
 if __name__ == "__main__":

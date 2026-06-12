@@ -12,6 +12,8 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "rclone-python>=0.1.24",
     "scikit-learn>=1.8.0",
+    "scipy",
+    "seaborn",
 ]
 
 [dependency-groups]
@@ -23,15 +25,15 @@ cu132 = [
     "torch>=2.12.0",
     "torchvision>=0.27.0",
     "torchinfo>=1.8.0",
-    "fbgemm-gpu",
-    "pytorch-triton",
+    "fbgemm-gpu; sys_platform == 'linux'",
+    "pytorch-triton; sys_platform == 'linux'",
 ]
 cu126 = [
     "torch>=2.12.0",
     "torchvision>=0.27.0",
     "torchinfo>=1.8.0",
-    "fbgemm-gpu",
-    "pytorch-triton",
+    "fbgemm-gpu; sys_platform == 'linux'",
+    "pytorch-triton; sys_platform == 'linux'",
 ]
 rocm72 = [
     "torch>=2.12.0; sys_platform == 'linux'",
