@@ -255,7 +255,12 @@ def check_system(config: TrainingConfig):
     # load_dotenv()
 
     # Only for AMD GPUs on ROCm, NVIDIA should just work out of the box
-    _ = os.environ["HSA_OVERRIDE_GFX_VERSION"]
+    # COMMENT THIS OUT FOR AMD APUs
+    # COMMENT THIS OUT FOR AMD APUs
+    # COMMENT THIS OUT FOR AMD APUs
+    # COMMENT THIS OUT FOR AMD APUs
+    # COMMENT THIS OUT FOR AMD APUs
+    # _ = os.environ["HSA_OVERRIDE_GFX_VERSION"]
 
     # Source of checks: https://medium.com/@yulin_li/commands-for-the-cross-validation-of-pytorch-and-cuda-installation-235c8003b446
     # Will deliberately throw an error so the program is going to terminate early if any of these checks do not pass.
