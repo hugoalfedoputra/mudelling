@@ -1,0 +1,417 @@
+def implementasi_preprocessing(path_csv_metadata, direktori_raw, split):
+    sampel_per_potongan = 16000 * 15
+    df_metadata = pd.read_csv(path_csv_metadata)
+
+    for indeks, baris in df_metadata.iterrows():
+        nama_berkas = baris["PATH"]
+        subfolder = nama_berkas.split("/")
+        nama_file_asli = nama_berkas.split("/")[-1].split(".")
+        
+        metadata = {
+            "track_id": baris["TRACK_ID"],
+            "split": split,
+            "tags": baris["TAGS"].split(",")
+        }
+        
+        path_berkas = os.path.join(direktori_raw, nama_berkas)
+        y, sr = librosa.load(path_berkas, sr=16000)
+        
+        banyak_potongan = len(y) // sampel_per_potongan
+        melspecs = []
+
+        for i in range(banyak_potongan):
+            batas_bawah = i * sampel_per_potongan
+            batas_atas = (i + 1) * sampel_per_potongan
+            potongan_y = y[batas_bawah:batas_atas]
+
+            si = librosa.feature.melspectrogram(
+                y=potongan_y, sr=16000, n_mels=96, n_fft=2048, hop_length=512
+            )
+            s_dbi = librosa.power_to_db(si, ref=10e-12)
+
+            s_dbi_norm = np.zeros_like(s_dbi)
+            for j in range(s_dbi.shape):
+                mean = np.mean(s_dbi[j])
+                var = np.var(s_dbi[j])
+                s_dbi_norm[j] = (s_dbi[j] - mean) / np.sqrt(var + 10e-12)
+
+            melspecs.append(s_dbi_norm)
+
+        direktori_simpan = f"./15_melspec/{split}/{subfolder}"
+        os.makedirs(direktori_simpan, exist_ok=True)
+
+        for i, spec in enumerate(melspecs):
+            nama_dasar = f"15_{nama_file_asli}_{i}"
+            
+            path_npy = os.path.join(direktori_simpan, f"{nama_dasar}.npy")
+            np.save(path_npy, spec)
+            
+            path_json = os.path.join(direktori_simpan, f"{nama_dasar}.json")
+            with open(path_json, "w") as berkas_json:
+                json.dump(metadata, berkas_json, indent=4)
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ModulFrontEnd(nn.Module):
+    def __init__(self):
+        super(ModulFrontEnd, self).__init__()
+        tinggi_90 = int(96 * 0.9)
+        tinggi_40 = int(96 * 0.4)
+
+        self.conv_v1 = nn.Conv2d(1, 16, (1, tinggi_90), padding="same")
+        self.bn_v1 = nn.BatchNorm2d(16)
+        self.conv_v2 = nn.Conv2d(1, 32, (3, tinggi_90), padding="same")
+        self.bn_v2 = nn.BatchNorm2d(32)
+        self.conv_v3 = nn.Conv2d(1, 64, (7, tinggi_90), padding="same")
+        self.bn_v3 = nn.BatchNorm2d(64)
+        self.conv_v4 = nn.Conv2d(1, 16, (1, tinggi_40), padding="same")
+        self.bn_v4 = nn.BatchNorm2d(16)
+        self.conv_v5 = nn.Conv2d(1, 32, (3, tinggi_40), padding="same")
+        self.bn_v5 = nn.BatchNorm2d(32)
+        self.conv_v6 = nn.Conv2d(1, 16, (7, tinggi_40), padding="same")
+        self.bn_v6 = nn.BatchNorm2d(16)
+
+        self.conv_h1 = nn.Conv1d(1, 16, 165, padding="same")
+        self.bn_h1 = nn.BatchNorm1d(16)
+        self.conv_h2 = nn.Conv1d(1, 32, 128, padding="same")
+        self.bn_h2 = nn.BatchNorm1d(32)
+        self.conv_h3 = nn.Conv1d(1, 64, 64, padding="same")
+        self.bn_h3 = nn.BatchNorm1d(64)
+        self.conv_h4 = nn.Conv1d(1, 128, 32, padding="same")
+        self.bn_h4 = nn.BatchNorm1d(128)
+
+    def forward(self, x):
+        x = x.transpose(1, 3)
+
+        v1 = F.max_pool2d(F.relu(self.bn_v1(self.conv_v1(x))), kernel_size=(1, 96))
+        v2 = F.max_pool2d(F.relu(self.bn_v2(self.conv_v2(x))), kernel_size=(1, 96))
+        v3 = F.max_pool2d(F.relu(self.bn_v3(self.conv_v3(x))), kernel_size=(1, 96))
+        v4 = F.max_pool2d(F.relu(self.bn_v4(self.conv_v4(x))), kernel_size=(1, 96))
+        v5 = F.max_pool2d(F.relu(self.bn_v5(self.conv_v5(x))), kernel_size=(1, 96))
+        v6 = F.max_pool2d(F.relu(self.bn_v6(self.conv_v6(x))), kernel_size=(1, 96))
+
+        x_mean = F.avg_pool2d(x, kernel_size=(1, 96))
+        h1 = F.relu(self.bn_h1(self.conv_h1(x_mean)))
+        h2 = F.relu(self.bn_h2(self.conv_h2(x_mean)))
+        h3 = F.relu(self.bn_h3(self.conv_h3(x_mean)))
+        h4 = F.relu(self.bn_h4(self.conv_h4(x_mean)))
+
+        out = torch.cat([v1, v2, v3, v4, v5, v6, h1, h2, h3, h4], dim=1)
+        return out
+
+
+import torch.nn as nn
+
+class ModulCNNBackend(nn.Module):
+    def __init__(self, probabilitas_dropout=0.0):
+        super(ModulCNNBackend, self).__init__()
+        self.konv_1 = nn.Conv2d(1, 64, (7, 464), padding="same")
+        self.bn_1 = nn.BatchNorm2d(64)
+        self.konv_2 = nn.Conv2d(64, 64, (7, 1), padding="same")
+        self.bn_2 = nn.BatchNorm2d(64)
+        self.konv_3 = nn.Conv2d(64, 64, (7, 1), padding="same")
+        self.bn_3 = nn.BatchNorm2d(64)
+        self.dropout = nn.Dropout(probabilitas_dropout)
+
+    def forward(self, x):
+        x = F.relu(self.bn_1(self.konv_1(x)))
+        x = self.dropout(x)
+        x = F.relu(self.bn_2(self.konv_2(x)))
+        x = F.max_pool2d(x, kernel_size=(2, 1), stride=(2, 1))
+        x = self.dropout(x)
+        x = F.relu(self.bn_3(self.konv_3(x)))
+        return x
+
+class ModulGRUBackend(nn.Module):
+    def __init__(self, probabilitas_dropout=0.0):
+        super(ModulGRUBackend, self).__init__()
+        self.gru = nn.GRU(
+            input_size=464, hidden_size=92, num_layers=3,
+            batch_first=True, dropout=probabilitas_dropout
+        )
+
+    def forward(self, x):
+        x, _ = self.gru(x)
+        return x
+
+class ModulAttentionBackend(nn.Module):
+    def __init__(self, probabilitas_dropout=0.0):
+        super(ModulAttentionBackend, self).__init__()
+        self.proyeksi_linier = nn.Linear(464, 92)
+        lapisan_encoder = nn.TransformerEncoderLayer(
+            d_model=92, nhead=4, dim_feedforward=92,
+            dropout=probabilitas_dropout, activation="relu", batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(lapisan_encoder, num_layers=3)
+
+    def forward(self, x):
+        x = self.proyeksi_linier(x)
+        x = self.transformer(x)
+        return x
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ModulPengklasifikasi(nn.Module):
+    def __init__(self, panjang_masukan, banyak_label=56):
+        super(ModulPengklasifikasi, self).__init__()
+        self.lapisan_fc = nn.Linear(panjang_masukan, 200)
+        self.bn = nn.BatchNorm1d(200)
+        self.dropout = nn.Dropout(0.5)
+        self.lapisan_keluaran = nn.Linear(200, banyak_label)
+        self.aktivasi_sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        panjang_waktu = x.size(2)
+        x_max = F.max_pool1d(x, kernel_size=panjang_waktu).squeeze(2)
+        x_mean = F.avg_pool1d(x, kernel_size=panjang_waktu).squeeze(2)
+        
+        x_gabung = torch.cat([x_max, x_mean], dim=1)
+        x_out = self.dropout(x_gabung)
+        
+        x_out = self.lapisan_fc(x_gabung)
+        x_out = self.bn(x_out)
+        x_out = F.relu(x_out)
+        x_out = self.lapisan_keluaran(x_out)
+        out = F.sigmoid(x_out)
+        
+        return out
+
+
+import torch.nn as nn
+
+class ModelUtuh(nn.Module):
+    def __init__(self, modul_frontend, modul_backend, modul_pengklasifikasi):
+        super(ModelUtuh, self).__init__()
+        self.frontend = modul_frontend
+        self.backend = modul_backend
+        self.pengklasifikasi = modul_pengklasifikasi
+
+    def forward(self, x):
+        x = self.frontend(x)
+        x = self.backend(x)
+        keluaran = self.pengklasifikasi(x)
+        
+        return keluaran
+
+
+import torch.optim as optim
+from sklearn.model_selection import ParameterGrid
+
+def implementasi_hyperparameter_tuning(berkas_metadata_validasi):
+    banyak_label = 56
+    kombinasi_hyperparameter = {
+        "jenis_backend": ["CNN", "GRU", "ATTN"],
+        "learning_rate": [0.01, 0.001, 0.0001],
+        "dropout_backend": [0.0, 0.1, 0.3, 0.5],
+        "epochs": [1]
+    }
+    
+    kombinasi_grid = ParameterGrid(kombinasi_hyperparameter)
+    
+    for params in kombinasi_grid:
+        dataset_latih = InisialisasiDataLoader(ukuran_batch=32)
+        frontend = ModulFrontEnd()
+        
+        if params["jenis_backend"] == "CNN":
+            backend = ModulCNNBackend(dropout=params["dropout_backend"])
+        elif params["jenis_backend"] == "GRU":
+            backend = ModulGRUBackend(dropout=params["dropout_backend"])
+        elif params["jenis_backend"] == "ATTN":
+            backend = ModulAttentionBackend(dropout=params["dropout_backend"])
+            
+        pengklasifikasi = ModulPengklasifikasi(banyak_label)
+        model = ModelUtuh(frontend, backend, pengklasifikasi)
+        
+        optimizer = optim.Adam(model.parameters(), lr=params["learning_rate"])
+        batas_epoch = params["epochs"]
+        
+        for epoch in range(batas_epoch):
+            model.train()
+            for indeks_batch, (melspecs, labels) in enumerate(dataset_latih):
+                optimizer.zero_grad()
+                outputs = model(melspecs)
+                loss = hitung_bce_loss_berbobot(outputs, labels)
+                loss.backward()
+                optimizer.step()
+            
+            metrik = validasi_model(model, berkas_metadata_validasi)
+            pr_auc_terkini = metrik["macro_pr_auc"]
+            
+            if epoch == batas_epoch - 1:
+                simpan_checkpoint(model, optimizer, epoch, pr_auc_terkini, params)
+
+
+import torch
+import numpy as np
+import glob
+from torch.utils.data import Dataset, DataLoader
+
+class DatasetMusik(Dataset):
+    def __init__(self, direktori_melspec):
+        self.daftar_potongan = glob.glob(direktori_melspec + "/*.npy")
+        self.banyak_label = 56
+
+    def __len__(self):
+        return len(self.daftar_potongan)
+
+    def __getitem__(self, indeks):
+        path_potongan = self.daftar_potongan[indeks]
+        spektogram = np.load(path_potongan)
+        tensor_melspec = torch.tensor(spektogram, dtype=torch.float32)
+        
+        label_mentah = label_dari_path(path_potongan)
+        tensor_label = torch.zeros(self.banyak_label, dtype=torch.float32)
+        for id_label in label_mentah:
+            tensor_label[id_label] = 1.0
+            
+        return tensor_melspec, tensor_label
+
+def inisialisasi_data_loader(direktori_melspec, ukuran_batch=32):
+    dataset = DatasetMusik(direktori_melspec)
+    data_loader = DataLoader(dataset, batch_size=ukuran_batch, shuffle=True)
+    return data_loader
+
+
+import torch
+import torch.optim as optim
+
+def train_model(dataset_latih, dataset_validasi):
+    batas_epoch = 55
+    banyak_label = 56
+    learning_rate = 0.001
+
+    frontend = ModulFrontEnd()
+    backend = ModulCNNBackend()
+    pengklasifikasi = ModulPengklasifikasi(banyak_label)
+    model = ModelUtuh(frontend, backend, pengklasifikasi)
+
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    riwayat_pr_auc = [0.0]
+
+    for epoch in range(batas_epoch):
+        model.train()
+        for indeks_batch, (melspecs, labels) in enumerate(dataset_latih):
+            optimizer.zero_grad()
+            outputs = model(melspecs)
+            loss = hitung_bce_loss_berbobot(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+        metrik_validasi = validate_model(model, dataset_validasi)
+        pr_auc_terkini = metrik_validasi["macro_pr_auc"]
+
+        if pr_auc_terkini > max(riwayat_pr_auc):
+            path_simpan = f"./checkpoint/model_terbaik_epoch_{epoch}.pth"
+            torch.save(model.state_dict(), path_simpan)
+
+        riwayat_pr_auc.append(pr_auc_terkini)
+
+
+import torch
+import numpy as np
+import pandas as pd
+from sklearn.metrics import average_precision_score, roc_auc_score
+
+def validate_model(model, berkas_metadata_validasi):
+    banyak_label = 56
+    df_validasi = pd.read_csv(berkas_metadata_validasi)
+
+    semua_prediksi = []
+    semua_label_asli = []
+
+    model.eval()
+    with torch.no_grad():
+        for indeks, baris in df_validasi.iterrows():
+            melspecs = muat_semua_potongan_melspec(baris["PATH"])
+            label_tensor = proses_multi_hot_encoding(baris["TAGS"], banyak_label)
+
+            outputs = model(melspecs)
+            prediksi_lagu = torch.mean(outputs, dim=0)
+
+            semua_prediksi.append(prediksi_lagu.numpy())
+            semua_label_asli.append(label_tensor.numpy())
+
+    semua_prediksi = np.array(semua_prediksi)
+    semua_label_asli = np.array(semua_label_asli)
+
+    pr_aucs = []
+    roc_aucs = []
+
+    for i in range(banyak_label):
+        y_score = semua_prediksi[:, i]
+        y_true = semua_label_asli[:, i]
+
+        pr_auc = average_precision_score(y_true, y_score)
+        roc_auc = roc_auc_score(y_true, y_score)
+
+        pr_aucs.append(pr_auc)
+        roc_aucs.append(roc_auc)
+
+    metrik = {
+        "macro_pr_auc": np.mean(pr_aucs),
+        "macro_roc_auc": np.mean(roc_aucs)
+    }
+
+    return metrik
+
+
+import torch
+import numpy as np
+import pandas as pd
+from sklearn.metrics import average_precision_score, roc_auc_score
+
+def test_model(berkas_metadata_pengujian, path_checkpoint):
+    banyak_label = 56
+
+    frontend = ModulFrontEnd()
+    backend = ModulCNNBackend()
+    pengklasifikasi = ModulPengklasifikasi(banyak_label)
+    model = ModelUtuh(frontend, backend, pengklasifikasi)
+
+    model.load_state_dict(torch.load(path_checkpoint))
+    model.eval()
+
+    df_pengujian = pd.read_csv(berkas_metadata_pengujian)
+
+    semua_prediksi = []
+    semua_label_asli = []
+
+    with torch.no_grad():
+        for indeks, baris in df_pengujian.iterrows():
+            melspecs = muat_semua_potongan_melspec(baris["PATH"])
+            label_tensor = proses_multi_hot_encoding(baris["TAGS"], banyak_label)
+
+            outputs = model(melspecs)
+            prediksi_lagu = torch.mean(outputs, dim=0)
+
+            semua_prediksi.append(prediksi_lagu.numpy())
+            semua_label_asli.append(label_tensor.numpy())
+
+    semua_prediksi = np.array(semua_prediksi)
+    semua_label_asli = np.array(semua_label_asli)
+
+    pr_aucs = []
+    roc_aucs = []
+
+    for i in range(banyak_label):
+        y_score = semua_prediksi[:, i]
+        y_true = semua_label_asli[:, i]
+
+        pr_auc = average_precision_score(y_true, y_score)
+        roc_auc = roc_auc_score(y_true, y_score)
+
+        pr_aucs.append(pr_auc)
+        roc_aucs.append(roc_auc)
+
+    metrik_pengujian = {
+        "test_macro_pr_auc": np.mean(pr_aucs),
+        "test_macro_roc_auc": np.mean(roc_aucs)
+    }
+
+    return metrik_pengujian

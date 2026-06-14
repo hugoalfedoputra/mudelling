@@ -21,6 +21,12 @@
 1. **.env** (when TESTING CODE, change the validation and/or test CSVs)
 1. **testing.py** (globals and hardcoded filter values)
 
+## No uv
+
+```
+pip install "matplotlib>=3.10.9" "mlflow>=1.27.0" "pandas>=3.0.3" "protobuf<5" "python-dotenv>=1.2.2" "rclone-python>=0.1.24" "scikit-learn>=1.8.0" scipy seaborn torchinfo
+```
+
 ## mlflow_pgdump
 
 ```
