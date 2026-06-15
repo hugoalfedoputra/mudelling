@@ -34,6 +34,9 @@ from dataclasses import dataclass
 # This is tied to ../prep/preprocessing.py; hard-coded so as to not issues
 N_MEL_BANDS = 96
 
+GRAD_CLIP_MAX_NORM = 1.0
+USE_CLIP_GRAD_NORM = False
+
 # IS_TESTING = False
 IS_TESTING = True
 
@@ -1228,7 +1231,7 @@ def _train_one_epoch(
     epoch: int,
     bour_loss=True,
     criterion=None,
-    grad_clip_max_norm=1.0,
+    grad_clip_max_norm=GRAD_CLIP_MAX_NORM,
 ):
     """Custom criterion/loss using Bour's (2021) as implemented in `bour_weighted_bce_loss(outputs, labels)` in this file."""
 
@@ -1268,7 +1271,10 @@ def _train_one_epoch(
         loss.backward()
 
         # region clip_grad_norm
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
+        if USE_CLIP_GRAD_NORM:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), max_norm=grad_clip_max_norm
+            )
         # endregion
 
         optimizer.step()
