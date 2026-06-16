@@ -8,8 +8,12 @@ docker-compose.yml
 training_logs.txt
 training_logs*.txt
 train*.py
+testing*.py
+!testing_all_metrics.py
 testing_logs*.txt
 params*.json
 !params.example.json
 f_train*.py
 # mlflow_pgdump
+textlogs
+tempcsv
