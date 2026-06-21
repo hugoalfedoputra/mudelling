@@ -116,7 +116,12 @@ def load_config() -> PreprocessorConfig:
             )
 
         melspec_remote = os.environ["RCLONE_REMOTE"]
-        melspec_storage = os.environ["REMOTE_MELSPEC_FOLDER"]
+
+        if melspec_remote.upper() == "LOCAL":
+            melspec_storage = os.environ["REMOTE_MELSPEC_FOLDER"]  # /path/to/rawdata
+        else:
+            # Keep as is
+            melspec_storage = os.environ["REMOTE_MELSPEC_FOLDER"]
 
         start_subfolder = int(os.environ["START_SUBFOLDER"])
         end_subfolder = int(os.environ["END_SUBFOLDER"])
@@ -183,11 +188,23 @@ def remote_melspec_subfolder_builder(
 ):
     if subfolder is None and tcon:
         return config.melspec_remote + ":" + config.melspec_storage
-    elif subfolder is not None and not tcon:
+    elif (
+        subfolder is not None and not tcon and config.melspec_remote.upper() != "LOCAL"
+    ):
         return (
             config.melspec_remote
             + ":"
             + config.melspec_storage
+            + "/"
+            + melspec_chunk_length
+            + MELSPEC_DIR_PREFIX
+            + subfolder
+        )
+    elif (
+        subfolder is not None and not tcon and config.melspec_remote.upper() == "LOCAL"
+    ):
+        return (
+            config.melspec_storage
             + "/"
             + melspec_chunk_length
             + MELSPEC_DIR_PREFIX
@@ -248,19 +265,32 @@ def remote_melspec_path_builder(
     melspec_chunk_length,
     chunk_index=0,
 ):
-    return (
-        config.melspec_remote
-        + ":"
-        + config.melspec_storage
-        + "/"
-        + melspec_chunk_length
-        + MELSPEC_DIR_PREFIX
-        + subfolder
-        + "/"
-        + melspec_chunk_length
-        + item_in_question.split(".")[0]
-        + f"_{chunk_index}.npy"
-    )
+    if config.melspec_remote.upper() != "LOCAL":
+        return (
+            config.melspec_remote
+            + ":"
+            + config.melspec_storage
+            + "/"
+            + melspec_chunk_length
+            + MELSPEC_DIR_PREFIX
+            + subfolder
+            + "/"
+            + melspec_chunk_length
+            + item_in_question.split(".")[0]
+            + f"_{chunk_index}.npy"
+        )
+    elif config.melspec_remote.upper() == "LOCAL":
+        return (
+            config.melspec_storage
+            + "/"
+            + melspec_chunk_length
+            + MELSPEC_DIR_PREFIX
+            + subfolder
+            + "/"
+            + melspec_chunk_length
+            + item_in_question.split(".")[0]
+            + f"_{chunk_index}.npy"
+        )
 
 
 def music_file_exists(subfolder, item_in_question):
@@ -295,7 +325,7 @@ def melspec_exists_remotely_uncorrupted(
                 out_dir = f"{LOCAL_TEMP_FOLDER}/{mpref}{MELSPEC_DIR_PREFIX}{subfolder}"
 
                 rclone.copy(
-                    in_path=remote_npy_path,
+                    in_path=remote_npy_path,  # type: ignore
                     out_path=out_dir,
                     ignore_existing=False,
                     args=RCLONE_ARGS,
@@ -371,7 +401,10 @@ def archive_and_upload_splits(config: PreprocessorConfig, subfolder, chunk_lengt
             json.dump(manifest_data, f, indent=4)
 
         # 3. Upload exactly 2 files
-        remote_dest = f"{config.melspec_remote}:{config.melspec_storage}/{split}"
+        if config.melspec_remote.upper() != "LOCAL":
+            remote_dest = f"{config.melspec_remote}:{config.melspec_storage}/{split}"
+        elif config.melspec_remote.upper() == "LOCAL":
+            remote_dest = f"{config.melspec_storage}/{split}"
 
         ignore_existing = not config.overwrite_remote_copy
 
