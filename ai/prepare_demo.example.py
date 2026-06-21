@@ -63,7 +63,7 @@ def create_mini_dataset(
     # 7. Handle Exporting
     if export_selection:
         # Create directory relative to script
-        dest_dir = os.path.join(".", "tempdemo", "raw")
+        dest_dir = os.path.join(".", "tempdemo", "raw", "00")
         os.makedirs(dest_dir, exist_ok=True)
         print(f"\nExporting files to: {dest_dir}")
 
