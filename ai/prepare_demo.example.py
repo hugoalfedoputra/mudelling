@@ -44,6 +44,7 @@ def create_mini_dataset(
                 # Create a copy of the row and update the TAGS column with the clean version
                 new_row = row.copy()
                 new_row["TAGS"] = "+".join(cleaned_tags)
+                new_row["PATH"] = f"00/{new_row["PATH"].split("/")[-1]}"
 
                 selected_rows.append(new_row)
                 label_counts[first_label] += 1
@@ -71,7 +72,7 @@ def create_mini_dataset(
         for _, row in mini_df.iterrows():
             src_path = os.path.join(source_audio_dir, row["PATH"])
             # Flattening the destination path so all mp3s are in one folder,
-            # e.g. ./temp/demo/raw/train/948.mp3
+            # e.g. ./temp/demo/raw/00/948.mp3
             dest_path = os.path.join(dest_dir, os.path.basename(row["PATH"]))
 
             try:
