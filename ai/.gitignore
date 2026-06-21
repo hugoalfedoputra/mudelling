@@ -17,3 +17,5 @@ f_train*.py
 # mlflow_pgdump
 textlogs
 tempcsv
+tempdemo
+prepare_demo.py
