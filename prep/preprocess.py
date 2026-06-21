@@ -165,8 +165,6 @@ def load_config() -> PreprocessorConfig:
 
 
 def load_split_metadata(csv_path: str, split_name: str) -> dict:
-    # Example CSV load. You might need to do this for train, val, and test CSVs
-    # Returns: {"48/948.mp3": {"split": "train", "tags": ["mood/theme---background"]}}
     df = pd.read_csv(csv_path)
     metadata = {}
     for _, row in df.iterrows():

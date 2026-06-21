@@ -8,7 +8,6 @@ def create_mini_dataset(
     csv_path: str,
     moods: list,
     file_count: int = 50,
-    split: str = "train",
     export_selection: bool = False,
     source_audio_dir: str = "./files",
 ):
@@ -64,7 +63,7 @@ def create_mini_dataset(
     # 7. Handle Exporting
     if export_selection:
         # Create directory relative to script
-        dest_dir = os.path.join(".", "tempdemo", "raw", split, "00")
+        dest_dir = os.path.join(".", "tempdemo", "raw")
         os.makedirs(dest_dir, exist_ok=True)
         print(f"\nExporting files to: {dest_dir}")
 
@@ -100,9 +99,12 @@ if __name__ == "__main__":
             csv_path=csv_file,
             moods=moods_list,
             file_count=60,
-            split=split,
             export_selection=True,
             source_audio_dir="/path/to/rawdata",
         )
+
+        os.makedirs("./tempdemo/csv/", exist_ok=True)
+        final_df.to_csv(f"./tempdemo/csv/mini_dataset_{split}.csv", index=False)
+
     except FileNotFoundError:
         print("Please ensure the CSV file path is correct to run the test.")
