@@ -216,10 +216,21 @@ def remote_melspec_subfolder_builder(
 
 def test_connections(config: PreprocessorConfig):
     print("Testing rclone remote connection...")
-    if not rclone.check_remote_existing(config.melspec_remote):
-        raise Exception(
-            f"MELSPEC_REMOTE '{config.melspec_remote}' is incorrect, missing, or empty in rclone.conf."
-        )
+
+    # Check melspec remote
+    if config.melspec_remote.upper() != "LOCAL":
+        if not rclone.check_remote_existing(config.melspec_remote):
+            raise Exception(
+                f"MELSPEC_REMOTE '{config.melspec_remote}' is incorrect, missing, or empty in rclone.conf."
+            )
+
+    # Check base storage remote
+    if config.storage_base_url.upper() != "LOCAL":
+        if not rclone.check_remote_existing(config.storage_base_url):
+            raise Exception(
+                f"REMOTE_BASE_URL '{config.storage_base_url}' is incorrect, missing, or empty in rclone.conf."
+            )
+
     print("Connection test passed.")
 
 
@@ -642,22 +653,31 @@ def is_split_manifest_complete(config, chunk_length, subfolder, split):
     Checks e.g., remote:melspec_storage/train/5_melspec00_manifest.json
     """
     manifest_name = f"{chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}_manifest.json"
-    remote_path = (
-        f"{config.melspec_remote}:{config.melspec_storage}/{split}/{manifest_name}"
-    )
 
-    # rclone cat prints the file contents to stdout
-    # result = subprocess.run(
-    #     ["rclone", "cat", remote_path], capture_output=True, text=True
-    # )
-
-    try:
-        result = rclone.cat(remote_path)
-        manifest = json.loads(result)
-        return manifest.get("status") == STATUS_COMPLETE
-    except Exception:
-        traceback.print_exc()
-        return False
+    if config.melspec_remote.upper() == "LOCAL":
+        remote_path = f"{config.melspec_storage}/{split}/{manifest_name}"
+        try:
+            # If it's a local file, we can bypass rclone and read directly via Python
+            if os.path.exists(remote_path):
+                with open(remote_path, "r") as f:
+                    manifest = json.load(f)
+                return manifest.get("status") == STATUS_COMPLETE
+            return False
+        except Exception:
+            traceback.print_exc()
+            return False
+    else:
+        remote_path = (
+            f"{config.melspec_remote}:{config.melspec_storage}/{split}/{manifest_name}"
+        )
+        try:
+            # rclone cat prints the file contents to stdout
+            result = rclone.cat(remote_path)
+            manifest = json.loads(result)
+            return manifest.get("status") == STATUS_COMPLETE
+        except Exception:
+            traceback.print_exc()
+            return False
 
 
 def is_melspec_subfolder_complete(
