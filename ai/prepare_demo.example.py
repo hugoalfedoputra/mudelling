@@ -11,37 +11,26 @@ def create_mini_dataset(
     export_selection: bool = False,
     source_audio_dir: str = "./files",
 ):
-    # Calculate the maximum tracks allowed per label
     max_per_label = math.ceil(file_count / len(moods))
 
-    # 2. Open and read the CSV sequentially
     df = pd.read_csv(csv_path)
 
     selected_rows = []
     label_counts = {mood: 0 for mood in moods}
 
-    # 3 & 4. Iterate sequentially through the CSV
     for _, row in df.iterrows():
-        # Stop if we've reached the desired file count
         if len(selected_rows) >= file_count:
             break
 
-        # Clean up labels (remove "mood/theme---") and split by "+"
         raw_tags = str(row["TAGS"]).split("+")
         cleaned_tags = [tag.replace("mood/theme---", "") for tag in raw_tags]
 
         # LOGIC CHECK: Are ALL the track's tags present in our target 'moods' list?
         # If even one tag is not in our list (e.g., tag "D" when list is [A, B, C]), it is discarded.
         if all(tag in moods for tag in cleaned_tags):
-
-            # Get the FIRST label from the track for balancing purposes
             first_label = cleaned_tags[0]
 
-            # Check if we still need tracks for this specific first label
             if label_counts[first_label] < max_per_label:
-
-                # We found a valid track!
-                # Create a copy of the row and update the TAGS column with the clean version
                 new_row = row.copy()
                 new_row["TAGS"] = "+".join(cleaned_tags)
                 new_row["PATH"] = f"00/{new_row["PATH"].split("/")[-1]}"
@@ -49,10 +38,9 @@ def create_mini_dataset(
                 selected_rows.append(new_row)
                 label_counts[first_label] += 1
 
-    # 5. Create the new dataframe
     mini_df = pd.DataFrame(selected_rows)
 
-    # 6. Print the dataframe and distribution statistics
+    # Debug
     print(f">>> Mini dataset created with length of {len(mini_df)} tracks")
     print("Label distribution:")
     for mood, count in label_counts.items():
@@ -61,9 +49,8 @@ def create_mini_dataset(
     print(mini_df.to_string(index=False))
     print("-" * 50)
 
-    # 7. Handle Exporting
+    # Export
     if export_selection:
-        # Create directory relative to script
         dest_dir = os.path.join(".", "tempdemo", "raw", "00")
         os.makedirs(dest_dir, exist_ok=True)
         print(f"\nExporting files to: {dest_dir}")
@@ -71,8 +58,6 @@ def create_mini_dataset(
         success_count = 0
         for _, row in mini_df.iterrows():
             src_path = os.path.join(source_audio_dir, row["PATH"])
-            # Flattening the destination path so all mp3s are in one folder,
-            # e.g. ./temp/demo/raw/00/948.mp3
             dest_path = os.path.join(dest_dir, os.path.basename(row["PATH"]))
 
             try:
