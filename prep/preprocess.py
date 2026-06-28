@@ -15,9 +15,8 @@ from rclone_python import rclone
 
 # ====================================================================================================
 #
-# THIS SCRIPT MUST BE SPECIFICALLY RUN USING DOCKER
-# THIS SCRIPT MUST BE SPECIFICALLY RUN USING DOCKER
-# THIS SCRIPT MUST BE SPECIFICALLY RUN USING DOCKER
+# THIS SCRIPT CAN BE RUN USING DOCKER WITH THE PROVIDED FILES
+# OR LOCALLY BY SETTING BOTH REMOTE ENV VARS TO "LOCAL"
 # ====================================================================================================
 
 # ====================================================================================================

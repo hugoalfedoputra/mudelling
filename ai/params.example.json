@@ -4,5 +4,6 @@
     "batch_size": 32,
     "classifier_dropout": 0.0,
     "epochs": 25,
-    "learning_rate": 0.01
+    "learning_rate": 0.01,
+    "post_global_dropout": 0.5
 }

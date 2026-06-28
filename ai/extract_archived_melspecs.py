@@ -17,9 +17,9 @@ from dataclasses import dataclass
 # This is from ../prep/preprocess.py; hard-coded so as to not cause import issues during build
 MELSPEC_PREFIXES = ["5_", "15_", "30_"]
 MELSPEC_DIR_PREFIX = "melspec"
-LOCAL_TEMP_FOLDER = "./temp"
+LOCAL_TEMP_FOLDER = "./tempdemo"
 LOCAL_ARCHIVE_FOLDER = "archive"
-LOCAL_RAW_FOLDER = "raw"
+LOCAL_RAW_FOLDER = "melspec"
 
 
 @dataclass

@@ -33,6 +33,7 @@ def create_mini_dataset(
             if label_counts[first_label] < max_per_label:
                 new_row = row.copy()
                 new_row["TAGS"] = "+".join(cleaned_tags)
+                new_row["CPATH"] = new_row["PATH"]
                 new_row["PATH"] = f"00/{new_row["PATH"].split("/")[-1]}"
 
                 selected_rows.append(new_row)
@@ -57,7 +58,7 @@ def create_mini_dataset(
 
         success_count = 0
         for _, row in mini_df.iterrows():
-            src_path = os.path.join(source_audio_dir, row["PATH"])
+            src_path = os.path.join(source_audio_dir, row["CPATH"])
             dest_path = os.path.join(dest_dir, os.path.basename(row["PATH"]))
 
             try:
@@ -74,23 +75,31 @@ def create_mini_dataset(
 
 
 if __name__ == "__main__":
-    moods_list = ["relaxing", "melodic", "emotional"]
-
+    # ====================================================================================================
     # CHANGE THESE
-    csv_file = "../prep/autotagging_moodtheme-train_clean.csv"
-    split = "train"
+    # CHANGE THESE
+    # CHANGE THESE
+    moods_list = ["relaxing", "melodic", "emotional"]
+    filename_list = ["train", "validation", "test"]
+    split_names = ["train", "val", "test"]
+    file_counts = [60, 20, 20]
+    export_selection = True
+    # ====================================================================================================
 
-    try:
-        final_df = create_mini_dataset(
-            csv_path=csv_file,
-            moods=moods_list,
-            file_count=60,
-            export_selection=True,
-            source_audio_dir="/path/to/rawdata",
-        )
+    for i in range(len(filename_list)):
+        csv_file = f"../prep/autotagging_moodtheme-{filename_list[i]}_clean.csv"
+        split = split_names[i]
 
-        os.makedirs("./tempdemo/csv/", exist_ok=True)
-        final_df.to_csv(f"./tempdemo/csv/mini_dataset_{split}.csv", index=False)
+        try:
+            final_df = create_mini_dataset(
+                csv_path=csv_file,
+                moods=moods_list,
+                file_count=file_counts[i],
+                export_selection=export_selection,
+                source_audio_dir="/path/to/files",
+            )
 
-    except FileNotFoundError:
-        print("Please ensure the CSV file path is correct to run the test.")
+            os.makedirs("./tempdemo/csv/", exist_ok=True)
+            final_df.to_csv(f"./tempdemo/csv/mini_dataset_{split}.csv", index=False)
+        except FileNotFoundError:
+            print("Please ensure the CSV file path is correct to run the test.")
