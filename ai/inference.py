@@ -59,7 +59,7 @@ def _infer(
     # print(">>> MANIFEST", manifest)
 
     print(f"Inferensi pada berkas musik: {path_val}...", end="\n")
-    start_time = time.time()
+    # start_time = time.time()
 
     all_song_outputs = []
     all_song_labels = []
@@ -190,7 +190,9 @@ def main(
 
     for i, a in enumerate(asl[0]):
         if a > 0:
-            print(f"Label {vocab[i]} diprediksi: {aso[0][i]}, sesungguhnya: {a}")
+            print(
+                f"Label {vocab[i].replace("mood/theme---", "")} diprediksi: {aso[0][i]}, sesungguhnya: {a}"
+            )
 
 
 if __name__ == "__main__":

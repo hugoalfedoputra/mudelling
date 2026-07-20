@@ -1172,7 +1172,7 @@ def build_vocabulary(csv_path: str):
     vocab = sorted(list(all_tags))
     tag2idx = {tag: idx for idx, tag in enumerate(vocab)}
 
-    print(f"Loaded vocabulary with {len(vocab)} unique tags.")
+    # print(f"Loaded vocabulary with {len(vocab)} unique tags.")
     return tag2idx, vocab
 
 
