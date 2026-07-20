@@ -56,9 +56,9 @@ def _infer(
     with open(f"{chunk_dir}/{config.melspec_chunk_length}{song_id}_0.json", "r") as f:
         manifest = json.loads(f.read())
 
-    print(">>> MANIFEST", manifest)
+    # print(">>> MANIFEST", manifest)
 
-    print(f"Starting unweighted chunk-averaged inference on {path_val}...")
+    print(f"Inferensi pada berkas musik: {path_val}...", end="\n")
     start_time = time.time()
 
     all_song_outputs = []
@@ -93,7 +93,7 @@ def _infer(
     all_song_outputs = np.vstack(all_song_outputs)
     all_song_labels = np.vstack(all_song_labels)
 
-    print(f"Inference finished in {time.time() - start_time:.2f}s.")
+    # print(f"Inference finished in {time.time() - start_time:.2f}s.")
 
     return all_song_outputs, all_song_labels
 
@@ -103,7 +103,7 @@ def main(
 ):
     config = load_config()
 
-    print(f"Downloading checkpoint artifact from Run ID: {previous_run_id}...")
+    # print(f"Unduh checkpoint pada model terbaik: {previous_run_id}")
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
 
@@ -116,9 +116,7 @@ def main(
         dst_path=f"{LOCAL_TEMP_FOLDER}/{LOCAL_MODEL_FOLDER}/inference/{previous_run_id}/{artifact_file_name}.pth",
     )
 
-    print(
-        f"After download: loading local PyTorch checkpoint from {local_checkpoint_path}..."
-    )
+    print(f"Muat checkpoint pada model terbaik: {local_checkpoint_path}...")
 
     # map_location='cpu' to load to CPU first before being loaded to device in the end so that
     # PyTorch doesn't "assume" that the model is loaded to the correct device from the getgo
@@ -131,7 +129,7 @@ def main(
         params = json.loads(f.read())
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Inferencing on: {device}")
+    print(f"Inferensi pada: {device}")
 
     tag2idx, vocab = build_vocabulary(config.training_metadata_path)
     num_classes = len(vocab)
@@ -168,7 +166,7 @@ def main(
 
     model.load_state_dict(checkpoint["model_state_dict"])  # type: ignore
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])  # type: ignore
-    print(f"Successfully restored model and optimizer states from prior epoch: {checkpoint.get('epoch', 'Unknown')}\n")  # type: ignore
+    print(f"Pemuatan model berhasil. Epoch: {checkpoint.get('epoch', 'Unknown')}\n")  # type: ignore
 
     aso, asl = _infer(
         path_val=path_val,
