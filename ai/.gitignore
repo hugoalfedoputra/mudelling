@@ -19,3 +19,6 @@ textlogs
 tempcsv
 tempdemo
 prepare_demo.py
+!params_cnn_f2.json
+!params_gru_f2.json
+!params_attn_f2.json

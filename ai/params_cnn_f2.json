@@ -1,0 +1,9 @@
+{
+    "backend_dropout": 0.1,
+    "backend_type": "CNN",
+    "batch_size": 32,
+    "classifier_dropout": 0.0,
+    "epochs": 55,
+    "learning_rate": 0.001,
+    "post_global_dropout": 0.5
+}

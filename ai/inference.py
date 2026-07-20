@@ -132,6 +132,14 @@ def main(
     print(f"Inferensi pada: {device}")
 
     tag2idx, vocab = build_vocabulary(config.training_metadata_path)
+
+    print("Pelabelan:")
+    vocab_print = []
+    for v in vocab:
+        vocab_print.append(v.replace("mood/theme---", ""))
+    print(vocab_print)
+    print()
+
     num_classes = len(vocab)
     frontend = Frontend(config=config)
 
@@ -180,6 +188,10 @@ def main(
     print(aso, end="\n")
     print(asl, end="\n")
 
+    for i, a in enumerate(asl[0]):
+        if a > 0:
+            print(f"Label {vocab[i]} diprediksi: {aso[0][i]}, sesungguhnya: {a}")
+
 
 if __name__ == "__main__":
     # =================================================================================
@@ -193,7 +205,15 @@ if __name__ == "__main__":
 
     main(
         json_config_path="./params_cnn_f2.json",
-        previous_run_id="0d0be9c5ee5e44b8a2fab97582a6ff7b",
+        # json_config_path="./params_gru_f2.json",
+        # json_config_path="./params_attn_f2.json",
+        previous_run_id="0d0be9c5ee5e44b8a2fab97582a6ff7b",  # CNN
+        # previous_run_id="17e64b9ee037445d82075c4abd671dec",  # GRU
+        # previous_run_id="4e7c7f09ba9b4490bd4c8008ffead321",  # ATNN
         artifact_file_name="BEST_CNN_model_epoch_17",
-        path_val="00/13400.mp3",  # Music file to inference
+        # artifact_file_name="BEST_GRU_model_epoch_7",
+        # artifact_file_name="BEST_ATTN_model_epoch_13",
+        # path_val="00/13400.mp3",
+        # path_val="74/1158174.mp3",
+        path_val="94/1353294.mp3",
     )
