@@ -2055,10 +2055,26 @@ def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_i
 
 
 # region Validation
+class ValChunkDataset(Dataset):
+    def __init__(self, chunk_list):
+        self.chunk_list = chunk_list
+
+    def __len__(self):
+        return len(self.chunk_list)
+
+    def __getitem__(self, idx):
+        song_idx, cf = self.chunk_list[idx]
+        melspec = np.load(cf).transpose()
+        # Return the song index so the GPU knows which song this chunk belongs to
+        return (
+            torch.tensor(song_idx, dtype=torch.int64),
+            torch.from_numpy(melspec).float(),
+        )
+
+
 def _validate_model(
     config: TrainingConfig,
     model: MusicModel,
-    # val_loader: DataLoader,
     device,
     tag2idx,
     vocab: list,
@@ -2067,69 +2083,85 @@ def _validate_model(
     model.eval()
 
     df = pd.read_csv(config.validation_metadata_path)
-    print(f"Starting unweighted chunk-averaged inference on {len(df)} tracks...")
+    print(f"Starting GPU-accelerated chunk-averaged inference on {len(df)} tracks...")
     start_time = time.time()
 
-    all_song_outputs = []
-    all_song_labels = []
+    chunk_list = []
+    song_labels = {}
 
+    # 1. Map all files instantly (No loading yet)
+    for song_idx, row in df.iterrows():
+        path_val = row["PATH"]
+        subfolder = path_val.split("/")[0]
+        song_id = path_val.split("/")[1].split(".")[0]
+
+        chunk_dir = Path(
+            f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val/{config.melspec_chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}"
+        )
+        pattern = f"{config.melspec_chunk_length}{song_id}_*.npy"
+        chunk_files = list(chunk_dir.glob(pattern))
+
+        if not chunk_files:
+            continue
+
+        for cf in chunk_files:
+            chunk_list.append((song_idx, cf))
+
+        tags = row["TAGS"].split("+")
+        label_tensor = torch.zeros(num_classes, dtype=torch.float32)
+        for t in tags:
+            if t in tag2idx:
+                label_tensor[tag2idx[t]] = 1.0
+
+        song_labels[song_idx] = label_tensor
+
+    if not chunk_list:
+        raise Exception("No validation chunks found. Skipping metrics generation...")
+
+    val_dataset = ValChunkDataset(chunk_list)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE * 2,
+        shuffle=False,
+        num_workers=config.num_processes,
+        pin_memory=True,
+    )
+
+    num_songs = len(df)
+    sum_preds = torch.zeros((num_songs, num_classes), device=device)
+    count_preds = torch.zeros((num_songs, 1), device=device)
+
+    print(f"Running batched inference on {len(chunk_list)} total chunks...")
     with torch.no_grad():
-        for _, row in df.iterrows():
-            path_val = row["PATH"]
-            subfolder = path_val.split("/")[0]
-            song_id = path_val.split("/")[1].split(".")[0]
+        for batch_song_idxs, batch_melspecs in val_loader:
+            batch_melspecs = batch_melspecs.to(device, non_blocking=True)
+            batch_song_idxs = batch_song_idxs.to(device, non_blocking=True)
 
-            chunk_dir = Path(
-                f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/val/{config.melspec_chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}"
-            )
-            pattern = f"{config.melspec_chunk_length}{song_id}_*.npy"
-            chunk_files = sorted(list(chunk_dir.glob(pattern)))
-
-            if not chunk_files:
-                # Silently skip missing val chunks to avoid log spam
-                continue
-
-            chunks_tensors = [
-                torch.from_numpy(np.load(cf).transpose()).float() for cf in chunk_files
-            ]
-            batch_melspecs = torch.stack(chunks_tensors).to(device)
-
-            # Target Labels
-            tags = row["TAGS"].split("+")
-            label_tensor = torch.zeros(num_classes, dtype=torch.float32)
-            for t in tags:
-                if t in tag2idx:
-                    label_tensor[tag2idx[t]] = 1.0
-
-            # Forward pass: shape [num_chunks, 56]
+            # Forward pass: shape [Batch, 56]
             outputs = model(batch_melspecs)
 
-            # Average inference outputs over chunks to get a song-level prediction [56]
-            song_output = torch.mean(outputs, dim=0)
+            # Aggregate chunk predictions to their respective song_idx on the GPU
+            sum_preds.index_add_(0, batch_song_idxs, outputs)
 
-            all_song_outputs.append(song_output.cpu().numpy())
-            all_song_labels.append(label_tensor.numpy())
+            # Keep track of how many chunks each song had so we can average them
+            counts = torch.ones_like(batch_song_idxs, dtype=torch.float32).unsqueeze(1)
+            count_preds.index_add_(0, batch_song_idxs, counts)
 
-    if len(all_song_outputs) == 0:
-        traceback.print_exc()
-        raise Exception(
-            "No validation files were evaluated. Skipping metrics generation..."
-        )
+    # 3. Calculate final averages purely on GPU
+    valid_mask = count_preds.squeeze(1) > 0
+    outputs_t = sum_preds[valid_mask] / count_preds[valid_mask]
 
-    # 3. Format overall results to specified sizes (N_SONGS, 56)
-    all_song_outputs = np.vstack(all_song_outputs)
-    all_song_labels = np.vstack(all_song_labels)
+    # Fetch corresponding labels in the exact same order
+    valid_indices = torch.where(valid_mask)[0].cpu().numpy()
+    labels_t = torch.stack([song_labels[idx] for idx in valid_indices]).to(device)
 
-    # Calculate testing split Loss using Bour's logic
-    outputs_t = torch.from_numpy(all_song_outputs).to(device)
-    labels_t = torch.from_numpy(all_song_labels).to(device)
-
+    # 4. Calculate testing split Loss using Bour's logic natively on GPU
     overall_test_loss = bour_weighted_bce_loss(
         outputs_t, labels_t, config.training_relative_frequencies
     )
     val_loss_avg = overall_test_loss.item()
 
-    # Std dev of testing loss
+    # Std dev of testing loss natively on GPU
     pt = torch.from_numpy(config.training_relative_frequencies).to(device)
     w_pos, w_neg = 2.0 / (1.0 + pt), (2.0 * pt) / (1.0 + pt)
     eps = 10e-12
@@ -2141,6 +2173,9 @@ def _validate_model(
 
     metrics = {"val_loss_avg": val_loss_avg, "val_loss_std": val_loss_std}
 
+    all_song_outputs = outputs_t.cpu().numpy()
+    all_song_labels = labels_t.cpu().numpy()
+
     pr_aucs = []
     roc_aucs = []
 
@@ -2149,8 +2184,6 @@ def _validate_model(
         y_score = all_song_outputs[:, i]
         y_true = all_song_labels[:, i]
 
-        # There's been cases where the y_score is NaN and average_precision_score is throwing
-        # ValueError of it receiving an input of NaN
         if np.isnan(y_score).any():
             print(">>> PREDICTION IS NAN")
             pr_auc = 0.0  # PR baseline
@@ -2159,7 +2192,6 @@ def _validate_model(
             pr_auc = average_precision_score(y_true, y_score)
             roc_auc = roc_auc_score(y_true, y_score)
         else:
-            # Handle edge cases where a rare label might not exist in the validation split
             print(">>> LABEL DOES NOT EXIST IN VAL SPLIT")
             pr_auc = 0.0
             roc_auc = 0.5
