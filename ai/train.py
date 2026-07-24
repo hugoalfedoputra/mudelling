@@ -312,7 +312,7 @@ def download_all_melspecs_first():
 # endregion
 
 
-# region Training Stats Logger
+# region Training stats logger
 class TrainingStatsLogger:
     def __init__(self, output_dir):
         self.output_dir = output_dir
@@ -353,10 +353,7 @@ class TrainingStatsLogger:
         if tensor is None or tensor.numel() == 0:
             return {k: 0.0 for k in self.headers[2:]}
 
-        # 1. `.detach()` ensures we don't mess with Autograd
-        # 2. `.cpu()` pushes the memory to standard RAM so we don't consume VRAM
-        # 3. `.float()` ensures precision compatibility (e.g., if you ever use Mixed Precision FP16)
-        t = tensor.detach().cpu().float()
+        t = tensor.float()
 
         l1 = torch.norm(t, p=1).item()
         l2 = torch.norm(t, p=2).item()
@@ -364,7 +361,6 @@ class TrainingStatsLogger:
         max_val = torch.max(t).item()
         min_val = torch.min(t).item()
 
-        # Calculate quantiles safely on CPU RAM
         quants = torch.quantile(
             t, torch.tensor([0.25, 0.5, 0.75], dtype=t.dtype, device=t.device)
         )
@@ -386,7 +382,7 @@ class TrainingStatsLogger:
     def log_initial_weights(self, model):
         weights = []
         for p in model.parameters():
-            weights.append(p.detach().cpu().view(-1))
+            weights.append(p.detach().view(-1))
 
         flat_tensor = torch.cat(weights) if weights else None
         stats = self._calc_stats(flat_tensor)
@@ -406,10 +402,10 @@ class TrainingStatsLogger:
 
             for p in group["params"]:
                 if p.requires_grad:
-                    weights.append(p.detach().cpu().view(-1))
+                    weights.append(p.detach().view(-1))
 
                 if p.grad is not None:
-                    grads.append(p.grad.detach().cpu().view(-1))
+                    grads.append(p.grad.detach().view(-1))
 
                 state = optimizer.state.get(p, {})
                 if not state:
@@ -420,11 +416,9 @@ class TrainingStatsLogger:
                     step = step.item()
 
                 if step > 0 and "exp_avg" in state and "exp_avg_sq" in state:
-                    # Immediately copy the Adam states to CPU memory *BEFORE*
-                    # executing the bias correction math. This prevents creating
-                    # intermediate m_hat and v_hat math graphs on the GPU.
-                    exp_avg = state["exp_avg"].detach().cpu()
-                    exp_avg_sq = state["exp_avg_sq"].detach().cpu()
+                    # Keep Adam states on the GPU
+                    exp_avg = state["exp_avg"].detach()
+                    exp_avg_sq = state["exp_avg_sq"].detach()
 
                     # Calculate unbiased moments following ADAM formulation
                     bias_correction1 = 1 - beta1**step
@@ -442,7 +436,7 @@ class TrainingStatsLogger:
         tensors = [weights, grads, m_hats, v_hats, delta_ts]
 
         for key, t_list in zip(keys, tensors):
-            # Concatenation happens fully on the CPU
+            # Concatenation happens extremely fast on the GPU
             t_cat = torch.cat(t_list) if t_list else None
             stats = self._calc_stats(t_cat)
             stats["epoch"] = epoch
