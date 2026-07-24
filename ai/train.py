@@ -4,6 +4,7 @@ import numpy as np
 import json
 import traceback
 import time
+import shutil
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,7 +41,7 @@ USE_CLIP_GRAD_NORM = False
 # IS_TESTING = False
 IS_TESTING = True
 
-EXPERIMENT_IDENT = "v4_15s"
+EXPERIMENT_IDENT = "TEST_f2b_15s"
 EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
 BACKUP_FREQUENCY = 5
 
@@ -51,6 +52,7 @@ RUN_ID = "4bd0d02bc54945d0b49cce579dd141e1"
 N_LAYERS = 3
 
 CNN_N_FILTERS = 64
+CNN_WITH_POOLING = True
 
 GRU_HIDDEN_SIZE = 92  # 355936 params
 IS_BIDIRECTIONAL = False
@@ -310,6 +312,169 @@ def download_all_melspecs_first():
 # endregion
 
 
+# region Training Stats Logger
+class TrainingStatsLogger:
+    def __init__(self, output_dir):
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.stats = {
+            "weights": [],
+            "gradients": [],
+            "m_hat": [],
+            "v_hat": [],
+            "delta_t": [],
+        }
+        self.filenames = {
+            "weights": "training_weight_stats_log.csv",
+            "gradients": "training_gradient_stats_log.csv",
+            "m_hat": "training_m_hat_state_log.csv",
+            "v_hat": "training_v_hat_state_log.csv",
+            "delta_t": "training_delta_t_state_log.csv",
+        }
+        self.headers = [
+            "epoch",
+            "iteration",
+            "l1_norm",
+            "l2_norm",
+            "average",
+            "median",
+            "q1",
+            "q3",
+            "max",
+            "min",
+        ]
+
+        # Create/Clear files with headers
+        for key, fname in self.filenames.items():
+            path = os.path.join(self.output_dir, fname)
+            pd.DataFrame(columns=self.headers).to_csv(path, index=False)
+
+    def _calc_stats(self, tensor):
+        if tensor is None or tensor.numel() == 0:
+            return {k: 0.0 for k in self.headers[2:]}
+
+        # 1. `.detach()` ensures we don't mess with Autograd
+        # 2. `.cpu()` pushes the memory to standard RAM so we don't consume VRAM
+        # 3. `.float()` ensures precision compatibility (e.g., if you ever use Mixed Precision FP16)
+        t = tensor.detach().cpu().float()
+
+        l1 = torch.norm(t, p=1).item()
+        l2 = torch.norm(t, p=2).item()
+        avg = torch.mean(t).item()
+        max_val = torch.max(t).item()
+        min_val = torch.min(t).item()
+
+        # Calculate quantiles safely on CPU RAM
+        quants = torch.quantile(
+            t, torch.tensor([0.25, 0.5, 0.75], dtype=t.dtype, device=t.device)
+        )
+        q1 = quants[0].item()
+        median = quants[1].item()
+        q3 = quants[2].item()
+
+        return {
+            "l1_norm": l1,
+            "l2_norm": l2,
+            "average": avg,
+            "median": median,
+            "q1": q1,
+            "q3": q3,
+            "max": max_val,
+            "min": min_val,
+        }
+
+    def log_initial_weights(self, model):
+        weights = []
+        for p in model.parameters():
+            weights.append(p.detach().cpu().view(-1))
+
+        flat_tensor = torch.cat(weights) if weights else None
+        stats = self._calc_stats(flat_tensor)
+        stats["epoch"] = -1
+        stats["iteration"] = -1
+
+        self.stats["weights"].append(stats)
+
+    def log_step(self, epoch, iteration, model, optimizer):
+        weights, grads, m_hats, v_hats, delta_ts = [], [], [], [], []
+
+        for group in optimizer.param_groups:
+            # Replicating Adam's state structure and variables
+            beta1, beta2 = group.get("betas", (0.9, 0.999))
+            lr = group.get("lr", 1e-3)
+            eps = group.get("eps", 1e-8)
+
+            for p in group["params"]:
+                if p.requires_grad:
+                    weights.append(p.detach().cpu().view(-1))
+
+                if p.grad is not None:
+                    grads.append(p.grad.detach().cpu().view(-1))
+
+                state = optimizer.state.get(p, {})
+                if not state:
+                    continue
+
+                step = state.get("step", 0)
+                if isinstance(step, torch.Tensor):
+                    step = step.item()
+
+                if step > 0 and "exp_avg" in state and "exp_avg_sq" in state:
+                    # Immediately copy the Adam states to CPU memory *BEFORE*
+                    # executing the bias correction math. This prevents creating
+                    # intermediate m_hat and v_hat math graphs on the GPU.
+                    exp_avg = state["exp_avg"].detach().cpu()
+                    exp_avg_sq = state["exp_avg_sq"].detach().cpu()
+
+                    # Calculate unbiased moments following ADAM formulation
+                    bias_correction1 = 1 - beta1**step
+                    bias_correction2 = 1 - beta2**step
+
+                    m_hat = exp_avg / bias_correction1
+                    v_hat = exp_avg_sq / bias_correction2
+                    delta_t = lr * m_hat / (torch.sqrt(v_hat) + eps)
+
+                    m_hats.append(m_hat.view(-1))
+                    v_hats.append(v_hat.view(-1))
+                    delta_ts.append(delta_t.view(-1))
+
+        keys = ["weights", "gradients", "m_hat", "v_hat", "delta_t"]
+        tensors = [weights, grads, m_hats, v_hats, delta_ts]
+
+        for key, t_list in zip(keys, tensors):
+            # Concatenation happens fully on the CPU
+            t_cat = torch.cat(t_list) if t_list else None
+            stats = self._calc_stats(t_cat)
+            stats["epoch"] = epoch
+            stats["iteration"] = iteration
+            self.stats[key].append(stats)
+
+    def flush(self):
+        for key, fname in self.filenames.items():
+            if self.stats[key]:
+                path = os.path.join(self.output_dir, fname)
+                df = pd.DataFrame(self.stats[key], columns=self.headers)
+                df.to_csv(path, mode="a", header=False, index=False)
+                self.stats[key] = []  # Clear memory post-flush
+
+    def backup_to_mlflow(self, epoch):
+        for key, fname in self.filenames.items():
+            src_path = os.path.join(self.output_dir, fname)
+            if os.path.exists(src_path):
+                name, ext = os.path.splitext(fname)
+                artifact_name = f"{name}_epoch_{epoch}{ext}"
+                dst_path = os.path.join(self.output_dir, artifact_name)
+                shutil.copy2(src_path, dst_path)
+
+                # Log to MLflow nested directory
+                mlflow.log_artifact(
+                    dst_path, artifact_path="training_checkpoints/training_stats"
+                )
+
+
+# endregion
+
+
 # region Model helpers
 # Helper to initialize weights similarly to tf.contrib.layers.variance_scaling_initializer()
 def dummy_run(config: TrainingConfig):
@@ -332,7 +497,7 @@ def dummy_run(config: TrainingConfig):
     # CNN BE
     model_cnn = MusicModel(
         frontend=Frontend(config, num_filt=16),
-        backend=CNNBackend(dummy_frontend_shape),
+        backend=CNNBackend(dummy_frontend_shape, with_pooling=CNN_WITH_POOLING),
         classifier=Classifier(
             in_features=2 * CNN_N_FILTERS, hidden_units=HIDDEN_UNITS, out_features=56
         ),
@@ -826,8 +991,16 @@ class Frontend(nn.Module):
 
 # region CNN BE
 class CNNBackend(nn.Module):
-    def __init__(self, input_shape, p_dropout=0.1, post_global_dropout=0.5):
+    def __init__(
+        self,
+        input_shape,
+        p_dropout=0.1,
+        post_global_dropout=0.5,
+        with_pooling=CNN_WITH_POOLING,
+    ):
         super(CNNBackend, self).__init__()
+        self.with_pooling = with_pooling
+
         # input_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
 
@@ -871,9 +1044,9 @@ class CNNBackend(nn.Module):
         out = F.relu(self.bn_conv2(self.conv2(out)))
         out = self.dropout2(out)  # [B, CNN_N_FILTERS, T, 1]
 
-        # 3. Maxpooling (downsamples time dimension by half)
-        # Matches TF's pool_size=[2, 1], strides=[2, 1]
-        out = F.max_pool2d(out, kernel_size=(2, 1), stride=(2, 1))
+        # 3. Maxpooling (downsamples time dimension by half, toggled via param)
+        if self.with_pooling:
+            out = F.max_pool2d(out, kernel_size=(2, 1), stride=(2, 1))
 
         # 4. Third CNN Layer
         out = F.relu(self.bn_conv3(self.conv3(out)))  # [B, CNN_N_FILTERS, T // 2, 1]
@@ -1232,6 +1405,7 @@ def _train_one_epoch(
     bour_loss=True,
     criterion=None,
     grad_clip_max_norm=GRAD_CLIP_MAX_NORM,
+    stats_logger=None,
 ):
     """Custom criterion/loss using Bour's (2021) as implemented in `bour_weighted_bce_loss(outputs, labels)` in this file."""
 
@@ -1279,6 +1453,10 @@ def _train_one_epoch(
 
         optimizer.step()
 
+        # LOGGING CUSTOM STATISTICS LOCALLY
+        if stats_logger is not None:
+            stats_logger.log_step(epoch, batch_idx, model, optimizer)
+
         running_loss += loss.item()
         running_losses.append(loss.item())
 
@@ -1287,6 +1465,10 @@ def _train_one_epoch(
             print(f"Approximate training time per batch: {time.time() - start_time}s")
 
         print(f"current_batch_loss: {loss.item()}")
+
+    # Flush statistics into CSV upon finishing an epoch
+    if stats_logger is not None:
+        stats_logger.flush()
 
     avg_epoch_loss = running_loss / len_training_loader
     print(f"Epoch {epoch} - Avg loss: {avg_epoch_loss:.8f}")
@@ -1307,6 +1489,7 @@ def _save_and_log_to_mlflow(
     train_avg_loss,
     current_pr_auc,
     is_best=False,
+    stats_logger=None,
 ):
     """
     This must be run inside a mlflow with block
@@ -1347,6 +1530,10 @@ def _save_and_log_to_mlflow(
 
     # Upload the raw .pth file as an MLflow artifact
     mlflow.log_artifact(local_ckpt_path, artifact_path="training_checkpoints")
+
+    # Upload training statistics if applicable
+    if stats_logger is not None:
+        stats_logger.backup_to_mlflow(epoch)
 
 
 # region Tuning
@@ -1396,6 +1583,10 @@ def run_hyperparameter_search(config: TrainingConfig):
         with mlflow.start_run(run_name=f"grid_search_run_{idx}"):
             mlflow.log_params(params)
 
+            # Setup Training Stats Logger for Tuning Run
+            stats_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}/stats_tuning_run_{idx}"
+            stats_logger = TrainingStatsLogger(stats_dir)
+
             training_loader = DataLoader(
                 train_dataset,
                 batch_size=params["batch_size"],
@@ -1425,6 +1616,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     input_shape=frontend_out.shape,
                     p_dropout=params["backend_dropout"],
                     post_global_dropout=params["post_global_dropout"],
+                    with_pooling=CNN_WITH_POOLING,
                 )
                 backend_out_features = CNN_N_FILTERS * 2
             elif params["backend_type"] == "GRU":
@@ -1455,6 +1647,10 @@ def run_hyperparameter_search(config: TrainingConfig):
 
             model = MusicModel(frontend, backend, classifier).to(device)
 
+            # Log Initial Model Weights Before Training
+            stats_logger.log_initial_weights(model)
+            stats_logger.flush()
+
             optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
             val_macro_pr_auc_history = []
@@ -1472,6 +1668,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                     device=device,
                     epoch=epoch,
                     bour_loss=True,
+                    stats_logger=stats_logger,
                     # region clip_grad_norm
                     # grad_clip_max_norm=params["grad_clip_max_norm"],
                     # endregion
@@ -1530,6 +1727,18 @@ def run_hyperparameter_search(config: TrainingConfig):
                         f"Full PyTorch checkpoint saved and uploaded as MLflow artifact!"
                     )
 
+                    # Store backup stats
+                    stats_logger.backup_to_mlflow(epoch)
+
+            # End of run execution context logic
+            stats_logger.flush()
+            for fname in stats_logger.filenames.values():
+                full_path = os.path.join(stats_logger.output_dir, fname)
+                if os.path.exists(full_path):
+                    mlflow.log_artifact(
+                        full_path, artifact_path="training_checkpoints/training_stats"
+                    )
+
             del (
                 model,
                 optimizer,
@@ -1574,6 +1783,12 @@ def run_training(
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Training on: {device}")
+
+        # Setup Logger specific for Training Instance
+        stats_dir = (
+            f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}/stats"
+        )
+        stats_logger = TrainingStatsLogger(stats_dir)
 
         tag2idx, vocab = build_vocabulary(config.training_metadata_path)
         num_classes = len(vocab)
@@ -1622,7 +1837,9 @@ def run_training(
         frontend_out = frontend(dummy_input)
 
         if params["backend_type"] == "CNN":
-            backend = CNNBackend(input_shape=frontend_out.shape)
+            backend = CNNBackend(
+                input_shape=frontend_out.shape, with_pooling=CNN_WITH_POOLING
+            )
             backend_out_features = CNN_N_FILTERS * 2
         elif params["backend_type"] == "GRU":
             backend = GRUBackend(input_shape=frontend_out.shape)
@@ -1643,6 +1860,10 @@ def run_training(
         )
 
         model = MusicModel(frontend, backend, classifier).to(device)
+
+        # Log Initial Model Weights Before Training
+        stats_logger.log_initial_weights(model)
+        stats_logger.flush()
 
         optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
@@ -1672,6 +1893,7 @@ def run_training(
                 optimizer=optimizer,
                 device=device,
                 epoch=epoch,
+                stats_logger=stats_logger,
             )
             print(f"Epoch [{epoch+1}/{epochs}] - Avg train Loss: {train_avg_loss:.8f}")
             # mlflow.log_metric("train_loss", train_avg_loss, step=epoch)
@@ -1713,6 +1935,7 @@ def run_training(
                     optimizer=optimizer,
                     train_avg_loss=train_avg_loss,
                     current_pr_auc=current_pr_auc,
+                    stats_logger=stats_logger,
                 )
                 # best_model_name = f"best_{params['backend_type']}_model_epoch_{epoch}"
                 # mlflow.pytorch.log_model(model, best_model_name)
@@ -1727,6 +1950,7 @@ def run_training(
                     optimizer=optimizer,
                     train_avg_loss=train_avg_loss,
                     current_pr_auc=current_pr_auc,
+                    stats_logger=stats_logger,
                 )
                 print(
                     f"Model backup at epoch {epoch} of {run_type}ing logged to MLflow!"
@@ -1745,6 +1969,7 @@ def run_training(
                         train_avg_loss=train_avg_loss,
                         current_pr_auc=current_pr_auc,
                         is_best=True,
+                        stats_logger=stats_logger,
                     )
 
                     best_model_name = (
@@ -1765,6 +1990,7 @@ def run_training(
                     optimizer=optimizer,
                     train_avg_loss=train_avg_loss,
                     current_pr_auc=current_pr_auc,
+                    stats_logger=stats_logger,
                 )
                 print(
                     f"Full PyTorch checkpoint saved and uploaded as MLflow artifact after epoch {epoch}"
@@ -1776,6 +2002,15 @@ def run_training(
         print("\nStdev loss at each epoch:\n", val_loss_std_history)
         print("\nMacro PR-AUC at each epoch:\n", val_macro_pr_auc_history)
         print("\nMacro ROC-AUC at each epoch:\n", val_macro_roc_auc_history)
+
+        # After completing the entire run, log all full CSV files cleanly
+        stats_logger.flush()
+        for fname in stats_logger.filenames.values():
+            full_path = os.path.join(stats_logger.output_dir, fname)
+            if os.path.exists(full_path):
+                mlflow.log_artifact(
+                    full_path, artifact_path="training_checkpoints/training_stats"
+                )
 
 
 def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_id: str):
@@ -1973,9 +2208,9 @@ def main():
 
     # dummy_run(config=config)
 
-    run_hyperparameter_search(config=config)
+    # run_hyperparameter_search(config=config)
 
-    # run_training(config=config, json_config_path=JSON_CONFIG_PATH)
+    run_training(config=config, json_config_path=JSON_CONFIG_PATH)
 
     # run_retraining(
     #     config=config,
