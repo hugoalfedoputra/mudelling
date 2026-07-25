@@ -1578,7 +1578,7 @@ def run_hyperparameter_search(config: TrainingConfig):
             mlflow.log_params(params)
 
             # Setup Training Stats Logger for Tuning Run
-            stats_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}/stats_tuning_run_{idx}"
+            stats_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_NAME}/stats_tuning_run_{idx}"
             stats_logger = TrainingStatsLogger(stats_dir)
 
             training_loader = DataLoader(
@@ -1695,7 +1695,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                 is_final_epoch = epoch == epochs - 1
                 if is_multiple_of_10 or is_final_epoch:
                     # Save locally then save as MLflow artifact
-                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}"
+                    checkpoint_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_NAME}"
                     os.makedirs(checkpoint_dir, exist_ok=True)
                     local_ckpt_path = (
                         f"{checkpoint_dir}/tuning_run_{idx}_checkpoint_{epoch}.pth"
@@ -1779,9 +1779,7 @@ def run_training(
         print(f"Training on: {device}")
 
         # Setup Logger specific for Training Instance
-        stats_dir = (
-            f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}/stats"
-        )
+        stats_dir = f"{LOCAL_TEMP_FOLDER}/{LOCAL_CHECKPOINT_FOLDER}/{EXPERIMENT_IDENT}/{dynamic_run_name}/stats"
         stats_logger = TrainingStatsLogger(stats_dir)
 
         tag2idx, vocab = build_vocabulary(config.training_metadata_path)
