@@ -991,9 +991,13 @@ class CNNBackend(nn.Module):
         p_dropout=0.1,
         post_global_dropout=0.5,
         with_pooling=CNN_WITH_POOLING,
+        first_layer_only=False,
+        skip_global_pooling=False,
     ):
         super(CNNBackend, self).__init__()
         self.with_pooling = with_pooling
+        self.first_layer_only = first_layer_only
+        self.skip_global_pooling = skip_global_pooling
 
         # input_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
@@ -1033,6 +1037,10 @@ class CNNBackend(nn.Module):
         x = x.permute(0, 3, 1, 2)  # -> [B, 1, T, 464]
 
         out = F.relu(self.bn_conv1(self.conv1(x)))
+
+        if self.first_layer_only:
+            return out
+
         out = self.dropout1(out)  # [B, CNN_N_FILTERS, T, 1]
 
         out = F.relu(self.bn_conv2(self.conv2(out)))
@@ -1044,6 +1052,9 @@ class CNNBackend(nn.Module):
 
         # 4. Third CNN Layer
         out = F.relu(self.bn_conv3(self.conv3(out)))  # [B, CNN_N_FILTERS, T // 2, 1]
+
+        if self.skip_global_pooling:
+            return out
 
         # 5. Global Pooling prep
         # Squeeze the trailing Width dimension of 1 to perform 1D Adaptive Pooling over time
@@ -1071,10 +1082,14 @@ class GRUBackend(nn.Module):
         p_dropout=0.1,
         post_global_dropout=0.5,
         is_bidirectional=False,
+        first_layer_only=False,
+        skip_global_pooling=False,
     ):
         super(GRUBackend, self).__init__()
         # input_shape from Frontend is [Batch, Time, Channels, 1]
         C = input_shape[2]
+        self.first_layer_only = first_layer_only
+        self.skip_global_pooling = skip_global_pooling
 
         if is_bidirectional:
             D = 2
@@ -1124,6 +1139,10 @@ class GRUBackend(nn.Module):
         x = x.squeeze(3)
 
         out, _ = self.gru1(x)  # out shape:[B, T, N_FILTERS]
+
+        if self.first_layer_only:
+            return out
+
         out = self.ln1(out)
         out = self.dropout1(out)
 
@@ -1133,6 +1152,9 @@ class GRUBackend(nn.Module):
 
         out, _ = self.gru3(out)
         out = self.ln3(out)
+
+        if self.skip_global_pooling:
+            return out
 
         # To perform 1D Adaptive Pooling over time, PyTorch expects[B, Features, Time]
         out = out.permute(0, 2, 1)  # ->[B, N_FILTERS, T]
@@ -1161,10 +1183,14 @@ class AttentionBackend(nn.Module):
         post_global_dropout=0.5,
         num_layers=1,
         use_rope=False,
+        first_layer_only=False,
+        skip_global_pooling=False,
     ):
         super(AttentionBackend, self).__init__()
         # input_shape from Frontend is[Batch, Time, Channels, 1]
         c = input_shape[2]
+        self.first_layer_only = first_layer_only
+        self.skip_global_pooling = skip_global_pooling
 
         # Linear Projection:
         # Project the large concatenated channel size (c) down to N_FILTERS (d_model)
@@ -1237,8 +1263,15 @@ class AttentionBackend(nn.Module):
 
         # Run through Self-Attention layers
         out = self.transformer1(x)  # ->[B, T, 464]
+
+        if self.first_layer_only:
+            return out
+
         out = self.transformer2(out)  # ->[B, T, 464]
         out = self.transformer3(out)  # ->[B, T, 464]
+
+        if self.skip_global_pooling:
+            return out
 
         # Pool across Time. Transform [B, T, 464] ->[B, 464, T]
         out = out.permute(0, 2, 1)
@@ -1306,16 +1339,18 @@ class MusicModel(nn.Module):
     Wrapper class to chain Frontend -> Backend -> Classifier
     """
 
-    def __init__(self, frontend, backend, classifier):
+    def __init__(self, frontend, backend, classifier, classify=True):
         super(MusicModel, self).__init__()
         self.frontend = frontend
         self.backend = backend
         self.classifier = classifier
+        self.classify = classify
 
     def forward(self, x):
         x = self.frontend(x)
         x = self.backend(x)
-        x = self.classifier(x)
+        if self.classify:
+            x = self.classifier(x)
         return x
 
 

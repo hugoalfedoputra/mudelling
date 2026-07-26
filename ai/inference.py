@@ -32,33 +32,46 @@ from train import (
 
 
 def _infer(
-    path_val: str,
+    input_path: str,
     config: TrainingConfig,
     model: MusicModel,
     device,
     tag2idx,
     num_classes,
     split: str = "test",
+    custom_input=False,
 ):
     model.eval()
 
     manifest: dict = {}
 
-    subfolder = path_val.split("/")[0]
-    song_id = path_val.split("/")[1].split(".")[0]
+    subfolder = input_path.split("/")[0]
+    song_id = input_path.split("/")[1].split(".")[0]
 
     chunk_dir = Path(
         f"{LOCAL_TEMP_FOLDER}/{LOCAL_RAW_FOLDER}/{split}/{config.melspec_chunk_length}{MELSPEC_DIR_PREFIX}{subfolder}"
     )
-    pattern = f"{config.melspec_chunk_length}{song_id}_*.npy"
-    chunk_files = sorted(list(chunk_dir.glob(pattern)))
 
-    with open(f"{chunk_dir}/{config.melspec_chunk_length}{song_id}_0.json", "r") as f:
-        manifest = json.loads(f.read())
+    if custom_input:
+        pattern = f"{config.melspec_chunk_length}*_{song_id}.npy"
+        custom_dir = Path(f"./temp/mock")
+        chunk_files = sorted(list(custom_dir.glob(pattern)))
+        with open(
+            f"./temp/mock/{config.melspec_chunk_length}{song_id}_0.json", "r"
+        ) as f:
+            manifest = json.loads(f.read())
+    else:
+        pattern = f"{config.melspec_chunk_length}{song_id}_*.npy"
+        chunk_files = sorted(list(chunk_dir.glob(pattern)))
+        # Only need to read the 0th JSON because the rest of the chunks have the same information
+        with open(
+            f"{chunk_dir}/{config.melspec_chunk_length}{song_id}_0.json", "r"
+        ) as f:
+            manifest = json.loads(f.read())
 
     # print(">>> MANIFEST", manifest)
 
-    print(f"Inferensi pada berkas musik: {path_val}...", end="\n")
+    print(f"Inferensi pada berkas musik: {input_path}...", end="\n")
     # start_time = time.time()
 
     all_song_outputs = []
@@ -99,7 +112,15 @@ def _infer(
 
 
 def main(
-    json_config_path: str, previous_run_id: str, artifact_file_name: str, path_val: str
+    json_config_path: str,
+    previous_run_id: str,
+    artifact_file_name: str,
+    input_path: str,
+    show_result=True,
+    first_layer_only=False,
+    skip_global_pooling=False,
+    classify=True,
+    custom_input=False,
 ):
     config = load_config()
 
@@ -148,10 +169,18 @@ def main(
     frontend_out = frontend(dummy_input)
 
     if params["backend_type"] == "CNN":
-        backend = CNNBackend(input_shape=frontend_out.shape)
+        backend = CNNBackend(
+            input_shape=frontend_out.shape,
+            first_layer_only=first_layer_only,
+            skip_global_pooling=skip_global_pooling,
+        )
         backend_out_features = CNN_N_FILTERS * 2
     elif params["backend_type"] == "GRU":
-        backend = GRUBackend(input_shape=frontend_out.shape)
+        backend = GRUBackend(
+            input_shape=frontend_out.shape,
+            first_layer_only=first_layer_only,
+            skip_global_pooling=skip_global_pooling,
+        )
         backend_out_features = GRU_HIDDEN_SIZE * 2
     elif params["backend_type"] == "ATTN":
         backend = AttentionBackend(
@@ -159,6 +188,8 @@ def main(
             project=True,
             d_model=ATTN_LIN_PROJ,
             n_heads=ATTN_N_HEADS,
+            first_layer_only=first_layer_only,
+            skip_global_pooling=skip_global_pooling,
         )
         backend_out_features = ATTN_LIN_PROJ * 2
 
@@ -168,7 +199,7 @@ def main(
         out_features=num_classes,
     )
 
-    model = MusicModel(frontend, backend, classifier).to(device)
+    model = MusicModel(frontend, backend, classifier, classify=classify).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=params["learning_rate"])
 
@@ -177,22 +208,26 @@ def main(
     print(f"Pemuatan model berhasil. Epoch: {checkpoint.get('epoch', 'Unknown')}\n")  # type: ignore
 
     aso, asl = _infer(
-        path_val=path_val,
+        input_path=input_path,
         config=config,
         model=model,
         device=device,
         tag2idx=tag2idx,
         num_classes=num_classes,
+        custom_input=custom_input,
     )
 
-    print(aso, end="\n")
-    print(asl, end="\n")
+    if show_result:
+        print(aso, end="\n")
+        print(asl, end="\n")
 
-    for i, a in enumerate(asl[0]):
-        if a > 0:
-            print(
-                f"Label {vocab[i].replace("mood/theme---", "")} diprediksi: {aso[0][i]}, sesungguhnya: {a}"
-            )
+        for i, a in enumerate(asl[0]):
+            if a > 0:
+                print(
+                    f"Label {vocab[i].replace("mood/theme---", "")} diprediksi: {aso[0][i]}, sesungguhnya: {a}"
+                )
+
+    return aso, asl
 
 
 if __name__ == "__main__":
@@ -217,5 +252,5 @@ if __name__ == "__main__":
         # artifact_file_name="BEST_ATTN_model_epoch_13",
         # path_val="00/13400.mp3",
         # path_val="74/1158174.mp3",
-        path_val="94/1353294.mp3",
+        input_path="94/1353294.mp3",
     )
