@@ -5,6 +5,7 @@ import json
 import traceback
 import time
 import shutil
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -35,19 +36,24 @@ from dataclasses import dataclass
 # This is tied to ../prep/preprocessing.py; hard-coded so as to not issues
 N_MEL_BANDS = 96
 
+RANDOM_SEED = 42
 GRAD_CLIP_MAX_NORM = 1.0
 USE_CLIP_GRAD_NORM = False
 
 # IS_TESTING = False
 IS_TESTING = True
 
-EXPERIMENT_IDENT = "TEST_f2b_15s"
+EXPERIMENT_IDENT = "demo"
 EXPERIMENT_NAME = f"{EXPERIMENT_IDENT}_chunk_music_model_grid_search"
 BACKUP_FREQUENCY = 5
 
-# This is ONLY for training/retraining a model and not tuning
-JSON_CONFIG_PATH = "./params_cnn_TESTING.json"
-RUN_ID = "4bd0d02bc54945d0b49cce579dd141e1"
+#
+# NOTE: this script is very tightly coupled to MLflow. If you don't wish to self-host, simply keep using
+# mlflow but keep the runs local i.e. on an mlruns folder by setting MLFLOW_TRACKING_URI=file:./mlruns in .env
+#
+# This MUST be set if you want to train/retrain a model; no need to be set for hyperparameter tuning
+JSON_CONFIG_PATH = "./params_tuning.json"  # used for train or retrain
+RUN_ID = "hexhere"  # used for retrain only
 
 N_LAYERS = 3
 
@@ -85,18 +91,18 @@ LOCAL_CHECKPOINT_FOLDER = "checkpoint"
 
 TUNING_PARAM_GRID = {
     # CHANGE THIS:
-    "backend_type": ["CNN"],
+    # "backend_type": ["CNN"],
     # "backend_type": ["GRU"],
     # "backend_type": ["ATTN"],
-    # "backend_type": ["CNN", "GRU", "ATTN"],  # for all at once
+    "backend_type": ["CNN", "GRU", "ATTN"],  # for all at once
     # "backend_type": ["GRU", "ATTN"],  # for bidirectional testing and RoPE testing
     #
     # MAIN PARAMS:
     "batch_size": [32],
-    "epochs": [5],
-    "learning_rate": [1e-2, 1e-3, 1e-4],
+    "epochs": [3],
+    "learning_rate": [1e-3, 1e-4],
     "classifier_dropout": [0.0],
-    "backend_dropout": [0.0, 0.1, 0.3, 0.5],
+    "backend_dropout": [0.0, 0.3, 0.5],
     "post_global_dropout": [0.5],
     #
     # TESTING:
@@ -150,6 +156,16 @@ def sys_prepare():
 
     if not os.path.exists(checkpoint_download_path):
         os.makedirs(checkpoint_download_path)
+
+
+# Source: https://www.geeksforgeeks.org/deep-learning/reproducibility-in-pytorch/
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # for multi-GPU setups
 
 
 def _calculate_dataset_relative_frequencies(metadata_path) -> np.ndarray:
@@ -254,17 +270,23 @@ def load_config():
 def check_system(config: TrainingConfig):
     import torch
 
+    # Force true for reproducibility
+    torch.backends.cudnn.deterministic = True
+
     torch.backends.cudnn.enabled = config.torch_backends_cudnn_enabled
     torch.backends.cudnn.benchmark = config.torch_backends_cudnn_benchmark
 
-    # load_dotenv()
+    load_dotenv()
 
-    # Only for AMD GPUs on ROCm, NVIDIA should just work out of the box
-    # COMMENT THIS OUT FOR AMD APUs
-    # COMMENT THIS OUT FOR AMD APUs
-    # COMMENT THIS OUT FOR AMD APUs
-    # COMMENT THIS OUT FOR AMD APUs
-    # COMMENT THIS OUT FOR AMD APUs
+    # =================================================================================================
+    #
+    # ONLY FOR AMD GPUs ON ROCm
+    # ONLY FOR AMD GPUs ON ROCm
+    # ONLY FOR AMD GPUs ON ROCm
+    # COMMENT THIS OUT FOR AMD APUs and NVIDIA GPUs
+    # COMMENT THIS OUT FOR AMD APUs and NVIDIA GPUs
+    # COMMENT THIS OUT FOR AMD APUs and NVIDIA GPUs
+    # =================================================================================================
     # _ = os.environ["HSA_OVERRIDE_GFX_VERSION"]
 
     # Source of checks: https://medium.com/@yulin_li/commands-for-the-cross-validation-of-pytorch-and-cuda-installation-235c8003b446
@@ -276,7 +298,7 @@ def check_system(config: TrainingConfig):
     print(f"GPUs available: {torch.cuda.device_count()}")
     print(f"Current GPU index: {torch.cuda.current_device()}")
     print(
-        f"Name of current GPU {torch.cuda.get_device_name(torch.cuda.current_device())}"
+        f"Name of current GPU: {torch.cuda.get_device_name(torch.cuda.current_device())}"
     )
 
     # Check if CUDA is available, and if so, create a tensor on GPU
@@ -1446,7 +1468,7 @@ def _train_one_epoch(
     len_training_loader = len(training_loader)
 
     for batch_idx, (melspecs, labels) in enumerate(training_loader):
-        print(f"Training batch {batch_idx}/{len_training_loader}. Epoch: {epoch}")
+        print(f"Training batch {batch_idx + 1}/{len_training_loader}. Epoch: {epoch}")
         start_time = time.time()
 
         melspecs = melspecs.to(device)
@@ -1622,6 +1644,7 @@ def run_hyperparameter_search(config: TrainingConfig):
                 shuffle=True,
                 num_workers=config.num_processes,
                 pin_memory=False,
+                worker_init_fn=lambda _: np.random.seed(RANDOM_SEED),
             )
 
             # val_loader = DataLoader(
@@ -1630,6 +1653,7 @@ def run_hyperparameter_search(config: TrainingConfig):
             #     shuffle=False,
             #     num_workers=config.num_processes,
             #     pin_memory=False,
+            #     worker_init_fn=lambda _: np.random.seed(RANDOM_SEED),
             # )
 
             frontend = Frontend(config=config)
@@ -1835,6 +1859,7 @@ def run_training(
             shuffle=True,
             num_workers=config.num_processes,
             pin_memory=False,
+            worker_init_fn=lambda _: np.random.seed(RANDOM_SEED),
         )
 
         # Download and setup validation data
@@ -1855,6 +1880,7 @@ def run_training(
         #     shuffle=False,  # No need to shuffle validation data
         #     num_workers=config.num_processes,
         #     pin_memory=False,
+        #     worker_init_fn=lambda _: np.random.seed(RANDOM_SEED),
         # )
 
         frontend = Frontend(config=config)
@@ -2074,7 +2100,9 @@ def run_retraining(config: TrainingConfig, json_config_path: str, previous_run_i
 
     # map_location='cpu' to load to CPU first before being loaded to device in the end so that
     # PyTorch doesn't "assume" that the model is loaded to the correct device from the getgo
-    checkpoint = torch.load(local_checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(
+        local_checkpoint_path, weights_only=True, map_location="cpu"
+    )
 
     run_training(
         config=config,
@@ -2158,6 +2186,7 @@ def _validate_model(
         shuffle=False,
         num_workers=config.num_processes,
         pin_memory=True,
+        worker_init_fn=lambda _: np.random.seed(RANDOM_SEED),
     )
 
     num_songs = len(df)
@@ -2255,6 +2284,8 @@ def main():
     # COMMENT AND UNCOMMENT FUNCTIONS ON THE FLY AS NEEDED
     # =================================================================================
 
+    set_seed(RANDOM_SEED)
+
     config = load_config()
 
     mlflow.set_tracking_uri(config.mlflow_tracking_uri)
@@ -2267,9 +2298,9 @@ def main():
 
     # dummy_run(config=config)
 
-    # run_hyperparameter_search(config=config)
+    run_hyperparameter_search(config=config)
 
-    run_training(config=config, json_config_path=JSON_CONFIG_PATH)
+    # run_training(config=config, json_config_path=JSON_CONFIG_PATH)
 
     # run_retraining(
     #     config=config,
