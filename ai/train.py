@@ -1347,6 +1347,7 @@ class Classifier(nn.Module):
         x = F.relu(x)
         x = self.bn1(x)
 
+        # This is optional
         x = self.dropout1(x)
 
         # Pass through the final output layer
